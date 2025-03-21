@@ -3,7 +3,9 @@ name = "rallo"
 description = "Rust allocator for tracking memory usage"
 version = "0.1.0"
 edition = "2024"
-license = "AGPL-3.0"
+license = "MIT"
+keywords = [ "profiling", "memory", "allocation", "tracking", "allocator" ]
+categories = [ "development-tools", "development-tools::profiling", "memory-management" ]
 authors = [
   "Tommaso Allevi <tomallevi@gmail.com>",
 ]
@@ -11,9 +13,8 @@ documentation = "https://docs.rs/rallo"
 repository = "https://github.com/oramasearch/rallo"
 homepage = "https://crates.io/crates/rallo"
 
-
 [lib]
-name         = "rallo"
+name = "rallo"
 
 [dependencies]
 backtrace = "0.3.74"
