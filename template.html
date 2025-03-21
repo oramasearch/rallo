@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>D3 Flamegraph (Root Bottom + Short Boxes)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <!--style>
+    body {
+      font-family: sans-serif;
+    }
+    .node {
+      stroke: #000;
+      stroke-width: 1px;
+      transition: opacity 0.3s;
+    }
+    .tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .legend {
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .legend rect {
+      width: 16px;
+      height: 16px;
+      stroke: black;
+      stroke-width: 1px;
+    }
+  </style-->
+</head>
+<body>
+    <body>
+        <div id="outer">
+          <div id="container">
+            <svg id="chart"></svg>
+          </div>
+        </div>
+    <div class="tooltip"></div>
+  
+    <style>
+
+:root {
+  --bg-color: #121212;
+  --text-color: #f0f0f0;
+  --tooltip-bg: rgba(248, 248, 248, 0.8);
+  --tooltip-text: #242424;
+  --legend-bg: #1e1e1e;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  font-family: sans-serif;
+}
+
+#outer {
+  padding: 50px;
+  box-sizing: border-box;
+  height: 100%;
+  width: 100%;
+}
+
+#container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+}
+
+svg {
+  flex: 1;
+  height: 100%;
+}
+
+.tooltip {
+  position: absolute;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-text);
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.legend {
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.legend rect {
+  width: 16px;
+  height: 16px;
+  stroke: black;
+  stroke-width: 1px;
+}
+.legend text {
+    fill: var(--text-color);
+    user-select: none;
+}
+    </style>
+
+  <script>
+    const data = {undefined};
+    const svg = d3.select("#chart");
+
+    // Get dimensions from container
+    const container = document.getElementById("container");
+    const fullWidth = container.clientWidth;
+    const fullHeight = container.clientHeight;
+    const legendWidth = 200;
+    const chartWidth = fullWidth - legendWidth;
+    const chartHeight = fullHeight;
+    const boxHeight = 20;
+
+    svg
+        .attr("viewBox", `0 0 ${fullWidth} ${chartHeight}`)
+        .attr("preserveAspectRatio", "xMinYMin meet");
+
+    const zoomLayer = svg.append("g");
+
+    const tooltip = d3.select(".tooltip");
+
+    const root = d3.hierarchy(data, d => d.children)
+        .sum(d => d.value)
+        .sort((a, b) => b.value - a.value);
+
+    const depth = root.height + 1;
+
+    const graphHeight = depth * boxHeight;
+    const svgHeight = chartHeight; // set earlier from container height
+    const scaleY = graphHeight > svgHeight ? svgHeight / graphHeight : 1;
+
+    const partition = d3.partition().size([chartWidth, graphHeight]);
+    partition(root);
+
+    // Flip the flamegraph vertically
+    root.each(d => {
+        d.y0 = graphHeight - (d.depth + 1) * boxHeight;
+        d.y1 = graphHeight - d.depth * boxHeight;
+    });
+
+    zoomLayer.attr("transform", `scale(1, ${scaleY})`);
+
+    const categories = [...new Set(root.descendants().map(d => d.data.category))];
+    const colorScale = d3.scaleOrdinal(d3.schemeCategory10).domain(categories);
+
+    const rects = zoomLayer.selectAll("rect")
+      .data(root.descendants())
+      .enter().append("rect")
+      .attr("class", "node")
+      .attr("x", d => d.x0)
+      .attr("y", d => d.y0)
+      .attr("width", d => d.x1 - d.x0)
+      .attr("height", d => d.y1 - d.y0)
+      .attr("fill", d => colorScale(d.data.category))
+      .attr("stroke", "#fff")
+      .on("mouseover", (event, d) => {
+        tooltip.style("opacity", 1)
+            .html(`
+            <strong>${d.data.key.filename}</strong><br>
+            lineno: ${d.data.key.lineno}<br>
+            fn_name: ${d.data.key.fn_name}<br>
+            Value: ${d.value}<br>
+            Category: ${d.data.category}
+            `)
+            .style("left", (event.pageX + 10) + "px")
+            .style("top", (event.pageY - 10) + "px");
+        })
+      .on("mousemove", (event) => {
+        tooltip.style("left", (event.pageX + 10) + "px")
+          .style("top", (event.pageY - 10) + "px");
+      })
+      .on("mouseout", () => {
+        tooltip.style("opacity", 0);
+      });
+
+      zoomLayer.selectAll("text")
+        .data(root.descendants())
+        .enter()
+        .append("text")
+        .attr("x", d => (d.x0 + d.x1) / 2)
+        .attr("y", d => (d.y0 + d.y1) / 2)
+        .attr("dy", "0.35em")
+        .attr("text-anchor", "middle")
+        .style("fill", "#fff")
+        .style("pointer-events", "auto")
+        .style("user-select", "text")
+        .text(d => {
+            const width = d.x1 - d.x0;
+            const text = `${d.data.key.filename}:${d.data.key.lineno}`
+            console.log(width, 10 * text.length)
+            return width > 10 * text.length ? text : "";
+        });
+
+    // Interactive legend
+    const legend = svg.append("g")
+        .attr("class", "legend")
+        .attr("transform", `translate(${chartWidth + 20}, 20)`);
+
+    console.log({categories});
+    categories.forEach((category, i) => {
+      const legendRow = legend.append("g")
+        .attr("transform", `translate(0, ${i * 25})`)
+        .on("click", () => highlightCategory(category));
+
+      legendRow.append("rect")
+        .attr("x", 0)
+        .attr("y", 0)
+        .attr("width", 16)
+        .attr("height", 16)
+        .attr("fill", colorScale(category));
+
+      legendRow.append("text")
+        .attr("x", 24)
+        .attr("y", 12)
+        .text(category)
+        .style("font-size", "14px")
+        .style("alignment-baseline", "middle");
+    });
+
+    let activeCategory = null;
+
+    function highlightCategory(category) {
+      if (activeCategory === category) {
+        rects.transition().duration(300).style("opacity", 1);
+        activeCategory = null;
+      } else {
+        rects.transition().duration(300)
+          .style("opacity", d => d.data.category === category ? 1 : 0.3);
+        activeCategory = category;
+      }
+    }
+  </script>
+</body>
+</html>
