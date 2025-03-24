@@ -51,11 +51,29 @@ fn test_stack() {
     // 2 different allocations in the foo function
     assert_eq!(alloc.len(), 2);
 
-    let sum = alloc.into_iter().map(|(_, size, _)| size).sum::<usize>();
+    let sum = alloc.iter().map(|(_, size, _)| *size).sum::<usize>();
     // The exact number depends on the system and the allocator
     // but it should be greater than 2 * 1024
     // because we have 2 allocations of 1024 bytes
     // and the allocator may add some overhead
     // for the allocation
     assert!(sum >= 1024 * 2);
+
+    let file_contents: Vec<_> = alloc
+        .iter()
+        .filter_map(|(key, _, _)| key.file_content.clone())
+        .collect();
+
+    let highlighteds: Vec<_> = file_contents
+        .iter()
+        .map(|c| c.highlighted.trim().to_string())
+        .collect();
+    assert_eq!(
+        highlighteds,
+        vec!["let mut s = Box::new(s);", "my_clone(&s);"]
+    );
+    let befores: Vec<_> = file_contents.iter().map(|c| c.before.len()).collect();
+    assert_eq!(befores, vec![5, 5]);
+    let afters: Vec<_> = file_contents.iter().map(|c| c.after.len()).collect();
+    assert_eq!(afters, vec![5, 5]);
 }

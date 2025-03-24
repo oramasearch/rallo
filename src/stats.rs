@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::VecDeque, ffi::c_void, fmt::Debug, path::Path};
+use std::{borrow::Cow, collections::VecDeque, ffi::c_void, fmt::Debug, io::BufRead, path::Path};
 
 use serde::Serialize;
 
@@ -144,6 +144,13 @@ impl Stats {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Clone)]
+pub struct FileContent {
+    pub before: Vec<String>,
+    pub highlighted: String,
+    pub after: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Clone)]
 pub struct Key {
     pub filename: String,
     pub colno: u32,
@@ -151,6 +158,7 @@ pub struct Key {
     #[serde(skip_serializing)]
     pub fn_address: *mut c_void,
     pub fn_name: String,
+    pub file_content: Option<FileContent>,
 }
 
 impl TryFrom<FrameInfo> for Key {
@@ -168,12 +176,47 @@ impl TryFrom<FrameInfo> for Key {
 
         let fn_name = rustc_demangle::demangle(&fn_name).to_string();
 
+        let delta = 5;
+        let range_min = if lineno > (delta + 1) {
+            lineno - delta - 1
+        } else {
+            0
+        };
+        let file_content = std::fs::File::open(&filename).ok().and_then(|file| {
+            let lines = std::io::BufReader::new(file).lines();
+            let mut lines: Vec<_> = lines
+                .enumerate()
+                .filter_map(|(i, line)| Some((i, line.ok()?)))
+                .skip_while(|(index, _)| *index < range_min as usize)
+                .take_while(|(index, _)| *index < lineno as usize + delta as usize)
+                .collect();
+
+            let highlighted_index = match lines.iter().position(|(i, _)| *i as u32 == lineno) {
+                Some(i) => i,
+                None => {
+                    println!("not found");
+                    return None;
+                }
+            };
+
+            let mut after = lines.split_off(highlighted_index - 1);
+            let highlighted = after.remove(0);
+            let before = lines;
+
+            Some(FileContent {
+                before: before.into_iter().map(|(_, line)| line).collect(),
+                highlighted: highlighted.1,
+                after: after.into_iter().map(|(_, line)| line).collect(),
+            })
+        });
+
         Ok(Key {
             filename,
             colno,
             lineno,
             fn_address,
             fn_name,
+            file_content,
         })
     }
 }
@@ -196,7 +239,7 @@ impl<K: Debug + Serialize> Tree<K> {
     {
         let d = serde_json::to_string(&self).unwrap();
         let html = include_str!("../template.html");
-        let html = html.replace("{undefined}", &d);
+        let html = html.replace("{ undefined }", &d);
         std::fs::write(path, html).unwrap();
     }
 
@@ -290,6 +333,7 @@ mod test {
                     lineno: 1,
                     fn_address: std::ptr::null_mut(),
                     fn_name: "foo".to_string(),
+                    file_content: None,
                 },
                 value: 1024,
                 category: Category::Unknown,
@@ -300,6 +344,7 @@ mod test {
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
                         fn_name: "foo2".to_string(),
+                        file_content: None,
                     },
                     value: 1024,
                     category: Category::Unknown,
@@ -310,6 +355,7 @@ mod test {
                             lineno: 1,
                             fn_address: std::ptr::null_mut(),
                             fn_name: "foo3".to_string(),
+                            file_content: None,
                         },
                         value: 1024,
                         category: Category::Unknown,
@@ -389,6 +435,7 @@ mod test {
                     lineno: 1,
                     fn_address: std::ptr::null_mut(),
                     fn_name: "foo".to_string(),
+                    file_content: None,
                 },
                 value: 1024 * 2,
                 category: Category::Unknown,
@@ -399,6 +446,7 @@ mod test {
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
                         fn_name: "foo2".to_string(),
+                        file_content: None,
                     },
                     value: 1024 * 2,
                     category: Category::Unknown,
@@ -409,6 +457,7 @@ mod test {
                             lineno: 1,
                             fn_address: std::ptr::null_mut(),
                             fn_name: "foo3".to_string(),
+                            file_content: None,
                         },
                         value: 1024 * 2,
                         category: Category::Unknown,
@@ -495,6 +544,7 @@ mod test {
                     lineno: 1,
                     fn_address: std::ptr::null_mut(),
                     fn_name: "foo".to_string(),
+                    file_content: None,
                 },
                 value: 1024 * 2,
                 category: Category::Unknown,
@@ -505,6 +555,7 @@ mod test {
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
                         fn_name: "foo2".to_string(),
+                        file_content: None,
                     },
                     value: 1024 * 2,
                     category: Category::Unknown,
@@ -515,6 +566,7 @@ mod test {
                             lineno: 1,
                             fn_address: std::ptr::null_mut(),
                             fn_name: "foo3".to_string(),
+                            file_content: None,
                         },
                         value: 1024 * 2,
                         category: Category::Unknown,
@@ -525,6 +577,7 @@ mod test {
                                 lineno: 1,
                                 fn_address: std::ptr::null_mut(),
                                 fn_name: "foo4".to_string(),
+                                file_content: None,
                             },
                             value: 1024,
                             category: Category::Unknown,
@@ -605,6 +658,7 @@ mod test {
                     lineno: 1,
                     fn_address: std::ptr::null_mut(),
                     fn_name: "foo".to_string(),
+                    file_content: None,
                 },
                 value: 1024 * 2,
                 category: Category::Unknown,
@@ -615,6 +669,7 @@ mod test {
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
                         fn_name: "foo2".to_string(),
+                        file_content: None,
                     },
                     value: 1024 * 2,
                     category: Category::Unknown,
@@ -626,6 +681,7 @@ mod test {
                                 lineno: 1,
                                 fn_address: std::ptr::null_mut(),
                                 fn_name: "foo4".to_string(),
+                                file_content: None,
                             },
                             value: 1024,
                             category: Category::Unknown,
@@ -638,6 +694,7 @@ mod test {
                                 lineno: 1,
                                 fn_address: std::ptr::null_mut(),
                                 fn_name: "foo3".to_string(),
+                                file_content: None,
                             },
                             value: 1024,
                             category: Category::Unknown,

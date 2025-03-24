@@ -1,118 +1,101 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <title>D3 Flamegraph (Root Bottom + Short Boxes)</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
-  <!--style>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/dark.min.css">
+
+  <style>
+    :root {
+      --bg-color: #121212;
+      --text-color: #f0f0f0;
+      --tooltip-bg: rgba(248, 248, 248, 0.8);
+      --tooltip-text: #242424;
+      --legend-bg: #1e1e1e;
+    }
+
+    html,
     body {
+      margin: 0;
+      height: 100%;
+      background-color: var(--bg-color);
+      color: var(--text-color);
       font-family: sans-serif;
     }
-    .node {
-      stroke: #000;
-      stroke-width: 1px;
-      transition: opacity 0.3s;
+
+    #outer {
+      padding: 50px;
+      box-sizing: border-box;
+      height: 100%;
+      width: 100%;
     }
+
+    #container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: row;
+    }
+
     .tooltip {
       position: absolute;
-      background: rgba(0, 0, 0, 0.7);
-      color: #fff;
-      padding: 5px 10px;
-      border-radius: 5px;
-      font-size: 12px;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.2s;
+      background-color: var(--tooltip-bg);
+      color: var(--tooltip-text);
+      position: absolute;
+      bottom: 0px;
+      right: 0px;
     }
+
+    svg {
+      flex: 1;
+      height: 100%;
+    }
+
     .legend {
       font-size: 14px;
       cursor: pointer;
     }
+
     .legend rect {
       width: 16px;
       height: 16px;
       stroke: black;
       stroke-width: 1px;
     }
-  </style-->
+
+    .legend text {
+      fill: var(--text-color);
+      user-select: none;
+    }
+
+    .line-numbers.current {
+      color: red;
+      background-color: yellow;
+    }
+  </style>
 </head>
+
 <body>
-    <body>
-        <div id="outer">
-          <div id="container">
-            <svg id="chart"></svg>
-          </div>
-        </div>
-    <div class="tooltip"></div>
-  
-    <style>
 
-:root {
-  --bg-color: #121212;
-  --text-color: #f0f0f0;
-  --tooltip-bg: rgba(248, 248, 248, 0.8);
-  --tooltip-text: #242424;
-  --legend-bg: #1e1e1e;
-}
+  <div id="outer">
+    <div id="container">
+      <svg id="chart"></svg>
+    </div>
+  </div>
+  <div class="tooltip">
+    aaa
+  </div>
 
-html, body {
-  margin: 0;
-  height: 100%;
-  background-color: var(--bg-color);
-  color: var(--text-color);
-  font-family: sans-serif;
-}
+  <script type="module">
+    import hljs from 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/es/highlight.min.js'
+    import rust from 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/es/languages/rust.min.js';
 
-#outer {
-  padding: 50px;
-  box-sizing: border-box;
-  height: 100%;
-  width: 100%;
-}
+    hljs.registerLanguage('rust', rust);
+    hljs.highlightAll();
 
-#container {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: row;
-}
-
-svg {
-  flex: 1;
-  height: 100%;
-}
-
-.tooltip {
-  position: absolute;
-  background: var(--tooltip-bg);
-  color: var(--tooltip-text);
-  padding: 5px 10px;
-  border-radius: 5px;
-  font-size: 12px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.legend {
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.legend rect {
-  width: 16px;
-  height: 16px;
-  stroke: black;
-  stroke-width: 1px;
-}
-.legend text {
-    fill: var(--text-color);
-    user-select: none;
-}
-    </style>
-
-  <script>
-    const data = {undefined};
+    const data = { undefined };
     const svg = d3.select("#chart");
 
     // Get dimensions from container
@@ -125,8 +108,8 @@ svg {
     const boxHeight = 20;
 
     svg
-        .attr("viewBox", `0 0 ${fullWidth} ${chartHeight}`)
-        .attr("preserveAspectRatio", "xMinYMin meet");
+      .attr("viewBox", `0 0 ${fullWidth} ${chartHeight}`)
+      .attr("preserveAspectRatio", "xMinYMin meet");
 
     const zoomLayer = svg.append("g");
 
@@ -147,8 +130,8 @@ svg {
 
     // Flip the flamegraph vertically
     root.each(d => {
-        d.y0 = graphHeight - (d.depth + 1) * boxHeight;
-        d.y1 = graphHeight - d.depth * boxHeight;
+      d.y0 = graphHeight - (d.depth + 1) * boxHeight;
+      d.y1 = graphHeight - d.depth * boxHeight;
     });
 
     zoomLayer.attr("transform", `scale(1, ${scaleY})`);
@@ -157,7 +140,7 @@ svg {
     categories.sort((a, b) => a.localeCompare(b));
     const colorScale = d3.scaleOrdinal([
       // Re-ordered d3.schemeCategory10
-      "#d62728",  
+      "#d62728",
       "#ff7f0e",
       "#1f77b4",
       "#2ca02c",
@@ -180,23 +163,69 @@ svg {
       .attr("fill", d => colorScale(d.data.category))
       .attr("stroke", "#fff")
       .on("mouseover", (event, d) => {
-        console.log(d.data)
-        
+        let code = ''
+        if (d.data.key.file_content) {
+          code = `<pre style="display: flex;">
+            <span style="align-items: center; display: flex; flex-direction: column;" id="line-numbers"></span><code class="language-rust">
+${d.data.key.file_content.before.join('\n')}
+<span class="highlighted-line">${d.data.key.file_content.highlighted}</span>
+${d.data.key.file_content.after.join('\n')}
+</code></pre>`
+        }
+
         tooltip.style("opacity", 1)
-            .html(`
+          .html(`
             <strong>${d.data.key.filename}</strong><br>
             lineno: ${d.data.key.lineno}<br>
             fn_name: ${d.data.key.fn_name}<br>
             Value: ${d.data.value}<br>
             Category: ${d.data.category}
-            `)
-            .style("left", (event.pageX + 10) + "px")
-            .style("top", (event.pageY - 10) + "px");
-            
-        })
+            ${code}
+            `);
+
+        if (d.data.key.file_content) {
+          hljs.highlightAll();
+          const myCodeBlock = document.getElementById('line-numbers');
+
+          const before = document.createElement('span');
+          before.className = 'line-numbers';
+          before.innerText = ' ';
+          myCodeBlock.appendChild(before);
+          const before2 = document.createElement('span');
+          before2.className = 'line-numbers';
+          before2.innerText = ' ';
+          myCodeBlock.appendChild(before2);
+
+          let line_numbers = d.data.key.lineno - d.data.key.file_content.before.length;
+          for (let i = 0; i < d.data.key.file_content.before.length; i++) {
+            const lineNumber = document.createElement('span');
+            lineNumber.className = 'line-numbers';
+            lineNumber.innerText = (line_numbers++);
+            myCodeBlock.appendChild(lineNumber);
+          }
+          const lineNumber = document.createElement('span');
+          lineNumber.className = 'line-numbers current';
+          lineNumber.innerText = (line_numbers++);
+          myCodeBlock.appendChild(lineNumber);
+          for (let i = 0; i < d.data.key.file_content.after.length; i++) {
+            const lineNumber = document.createElement('span');
+            lineNumber.className = 'line-numbers';
+            lineNumber.innerText = (line_numbers++);
+            myCodeBlock.appendChild(lineNumber);
+          }
+
+        }
+      })
       .on("mousemove", (event) => {
-        tooltip.style("left", (event.pageX + 10) + "px")
-          .style("top", (event.pageY - 10) + "px");
+        if (event.pageX < window.innerWidth / 2) {
+          tooltip.style("right", 10 + "px")
+            .style("left", "auto")
+            .style("bottom", 10 + "px");
+        } else {
+          tooltip.style("left", 10 + "px")
+            .style("right", "auto")
+            .style("bottom", 10 + "px");
+        }
       })
       .on("mouseout", () => {
         tooltip.style("opacity", 0);
@@ -204,26 +233,26 @@ svg {
 
     // Fill box with texts  
     zoomLayer.selectAll("text")
-        .data(root.descendants())
-        .enter()
-        .append("text")
-        .attr("x", d => (d.x0 + d.x1) / 2)
-        .attr("y", d => (d.y0 + d.y1) / 2)
-        .attr("dy", "0.35em")
-        .attr("text-anchor", "middle")
-        .style("fill", "#fff")
-        .style("pointer-events", "auto")
-        .style("user-select", "text")
-        .text(d => {
-            const width = d.x1 - d.x0;
-            const text = `${d.data.key.filename}:${d.data.key.lineno}`
-            return width > 10 * text.length ? text : "";
-        });
+      .data(root.descendants())
+      .enter()
+      .append("text")
+      .attr("x", d => (d.x0 + d.x1) / 2)
+      .attr("y", d => (d.y0 + d.y1) / 2)
+      .attr("dy", "0.35em")
+      .attr("text-anchor", "middle")
+      .style("fill", "#fff")
+      .style("pointer-events", "auto")
+      .style("user-select", "text")
+      .text(d => {
+        const width = d.x1 - d.x0;
+        const text = `${d.data.key.filename}:${d.data.key.lineno}`
+        return width > 10 * text.length ? text : "";
+      });
 
     // Interactive legend
     const legend = svg.append("g")
-        .attr("class", "legend")
-        .attr("transform", `translate(${chartWidth + 20}, 20)`);
+      .attr("class", "legend")
+      .attr("transform", `translate(${chartWidth + 20}, 20)`);
 
     categories.forEach((category, i) => {
       const legendRow = legend.append("g")
@@ -259,4 +288,5 @@ svg {
     }
   </script>
 </body>
+
 </html>
