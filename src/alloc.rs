@@ -1,5 +1,6 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
+    collections::VecDeque,
     ffi::c_void,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
@@ -42,7 +43,7 @@ type LogsType<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> =
 ///
 /// // Safety: it is called after `stop_track`
 /// let stats = unsafe { ALLOCATOR.calculate_stats() };
-/// let tree = stats.into_tree();
+/// let tree = stats.into_tree().unwrap();
 ///
 /// tree.print_flamegraph("flamegraph-like-page.html");
 ///
@@ -136,7 +137,7 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
 
             let mut allocation = Allocation {
                 size: log.0,
-                stack: Vec::new(),
+                stack: VecDeque::new(),
             };
 
             let stack_size = log.1;
@@ -156,7 +157,7 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
                     fn_address = s.addr();
                     fn_name = s.name().and_then(|s| s.as_str()).map(|s| s.to_string());
                 });
-                allocation.stack.push(FrameInfo {
+                allocation.stack.push_front(FrameInfo {
                     filename,
                     colno,
                     lineno,

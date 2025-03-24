@@ -1,4 +1,4 @@
-use std::{ffi::c_void, fmt::Debug, path::Path};
+use std::{borrow::Cow, collections::VecDeque, ffi::c_void, fmt::Debug, path::Path};
 
 use serde::Serialize;
 
@@ -21,7 +21,7 @@ pub struct Allocation {
     /// Allocation size
     pub size: usize,
     /// Stack trace
-    pub stack: Vec<FrameInfo>,
+    pub stack: VecDeque<FrameInfo>,
 }
 
 #[derive(Debug)]
@@ -32,17 +32,22 @@ pub struct Stats {
 
 impl Stats {
     /// Transform the raw stats into a tree structure
-    pub fn into_tree(mut self) -> Tree<Key, usize> {
-        let cwd = std::env::current_dir().unwrap();
-        let cwd = cwd.to_str().unwrap();
+    pub fn into_tree(mut self) -> Result<Tree<Key>, Cow<'static, str>> {
+        let cwd = std::env::current_dir()
+            .map_err(|e| format!("failed to get current directory: {:?}", e))?;
+        let cwd = cwd.to_str().ok_or("current directory is not valid UTF-8")?;
 
-        let allocation = self.allocations.pop().unwrap();
+        let allocation = match self.allocations.pop() {
+            None => {
+                return Err("no allocations".into());
+            }
+            Some(allocation) => allocation,
+        };
 
         let mut stack = allocation.stack;
-        stack.reverse();
 
-        let key = loop {
-            let root = stack.pop();
+        let initial_key = loop {
+            let root = stack.pop_front();
             let root = match root {
                 None => panic!("stack is empty"),
                 Some(root) => root,
@@ -54,32 +59,58 @@ impl Stats {
         };
 
         let mut tree = Tree {
-            category: guess_category(cwd, key.filename.as_str()),
-            key,
+            category: guess_category(cwd, initial_key.filename.as_str()),
+            key: initial_key.clone(),
             value: 0,
             children: Vec::new(),
         };
         let mut pointer = &mut tree;
-        for info in stack {
+        let stack_len = stack.len();
+        for (index, info) in stack.into_iter().enumerate() {
+            let is_last = stack_len == index + 1;
             let key: Key = match info.try_into() {
                 Ok(key) => key,
                 Err(_) => continue,
             };
 
-            let c = Tree {
+            let mut c = Tree {
                 category: guess_category(cwd, key.filename.as_str()),
                 key,
                 value: 0,
                 children: Vec::new(),
             };
+            if is_last {
+                c.value += allocation.size;
+            }
             pointer.children.push(c);
             pointer = pointer.children.last_mut().unwrap();
         }
 
         for mut allocation in self.allocations {
-            allocation.stack.reverse();
             let mut pointer = &mut tree;
-            for info in allocation.stack {
+
+            // Ensure the first frame of the allocation is the same as the first frame of the tree
+            // Otherwise we have 2 roots.
+            // Technically we should merge the "root" tree with the current one.
+            // But, it is effortly to do so.
+            // So we just panic.
+            let first_key: Key = loop {
+                let s = match allocation.stack.pop_front() {
+                    None => panic!("stack is empty"),
+                    Some(s) => s,
+                };
+                match s.try_into() {
+                    Ok(k) => break k,
+                    Err(_) => continue,
+                };
+            };
+            if first_key != initial_key {
+                panic!("first frame of allocation is not the same as the first frame of the tree");
+            }
+
+            let stack_len = allocation.stack.len();
+            for (index, info) in allocation.stack.into_iter().enumerate() {
+                let is_last = stack_len == index + 1;
                 let key: Key = match info.try_into() {
                     Ok(key) => key,
                     Err(_) => continue,
@@ -92,20 +123,27 @@ impl Stats {
                     let c = Tree {
                         category: guess_category(cwd, key.filename.as_str()),
                         key,
-                        value: allocation.size,
+                        value: 0,
                         children: Vec::new(),
                     };
                     pointer.children.push(c);
                     pointer.children.last_mut().unwrap()
                 };
+
+                // Put the effort only on the last frame
+                if is_last {
+                    pointer.value += allocation.size;
+                }
             }
         }
 
-        tree
+        tree.update_value();
+
+        Ok(tree)
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Clone)]
 pub struct Key {
     pub filename: String,
     pub colno: u32,
@@ -128,6 +166,8 @@ impl TryFrom<FrameInfo> for Key {
         let fn_address = value.fn_address.ok_or("fn_address is None")?;
         let fn_name = value.fn_name.ok_or("fn_name is None")?;
 
+        let fn_name = rustc_demangle::demangle(&fn_name).to_string();
+
         Ok(Key {
             filename,
             colno,
@@ -139,15 +179,16 @@ impl TryFrom<FrameInfo> for Key {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 /// Tree structure for the flamegraph
-pub struct Tree<K: Debug + Serialize, V: Debug + Serialize> {
+pub struct Tree<K: Debug + Serialize> {
     pub key: K,
-    pub value: V,
+    pub value: usize,
     pub category: Category,
-    pub children: Vec<Tree<K, V>>,
+    pub children: Vec<Tree<K>>,
 }
 
-impl<K: Debug + Serialize, V: Debug + Serialize> Tree<K, V> {
+impl<K: Debug + Serialize> Tree<K> {
     /// Write an HTML file with the flamegraph at the given path
     pub fn print_flamegraph<P>(&self, path: P)
     where
@@ -158,9 +199,19 @@ impl<K: Debug + Serialize, V: Debug + Serialize> Tree<K, V> {
         let html = html.replace("{undefined}", &d);
         std::fs::write(path, html).unwrap();
     }
+
+    fn update_value(&mut self) {
+        let mut value = 0;
+        for child in &mut self.children {
+            child.update_value();
+            value += child.value;
+        }
+        self.value += value;
+    }
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(rename_all = "lowercase")]
 /// Category of the allocation
 /// - `rustc`: Rust compiler
@@ -189,5 +240,412 @@ fn guess_category(cwd: &str, filename: &str) -> Category {
         Category::Application
     } else {
         Category::Unknown
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn test_tree_value_1() {
+        let stats = Stats {
+            allocations: vec![Allocation {
+                size: 1024,
+                stack: VecDeque::from([
+                    FrameInfo {
+                        filename: Some("foo.rs".into()),
+                        colno: Some(1),
+                        lineno: Some(1),
+                        fn_address: Some(std::ptr::null_mut()),
+                        fn_name: Some("foo".into()),
+                    },
+                    FrameInfo {
+                        filename: Some("foo2.rs".into()),
+                        colno: Some(1),
+                        lineno: Some(1),
+                        fn_address: Some(std::ptr::null_mut()),
+                        fn_name: Some("foo2".into()),
+                    },
+                    FrameInfo {
+                        filename: Some("foo3.rs".into()),
+                        colno: Some(1),
+                        lineno: Some(1),
+                        fn_address: Some(std::ptr::null_mut()),
+                        fn_name: Some("foo3".into()),
+                    },
+                ]),
+            }],
+        };
+        let tree = stats.into_tree().unwrap();
+
+        assert_eq!(
+            tree,
+            Tree {
+                key: Key {
+                    filename: "foo.rs".to_string(),
+                    colno: 1,
+                    lineno: 1,
+                    fn_address: std::ptr::null_mut(),
+                    fn_name: "foo".to_string(),
+                },
+                value: 1024,
+                category: Category::Unknown,
+                children: vec![Tree {
+                    key: Key {
+                        filename: "foo2.rs".to_string(),
+                        colno: 1,
+                        lineno: 1,
+                        fn_address: std::ptr::null_mut(),
+                        fn_name: "foo2".to_string(),
+                    },
+                    value: 1024,
+                    category: Category::Unknown,
+                    children: vec![Tree {
+                        key: Key {
+                            filename: "foo3.rs".to_string(),
+                            colno: 1,
+                            lineno: 1,
+                            fn_address: std::ptr::null_mut(),
+                            fn_name: "foo3".to_string(),
+                        },
+                        value: 1024,
+                        category: Category::Unknown,
+                        children: vec![],
+                    }],
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn test_tree_value_2() {
+        let stats = Stats {
+            allocations: vec![
+                Allocation {
+                    size: 1024,
+                    stack: VecDeque::from([
+                        FrameInfo {
+                            filename: Some("foo.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo2.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo2".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo3.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo3".into()),
+                        },
+                    ]),
+                },
+                Allocation {
+                    size: 1024,
+                    stack: VecDeque::from([
+                        FrameInfo {
+                            filename: Some("foo.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo2.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo2".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo3.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo3".into()),
+                        },
+                    ]),
+                },
+            ],
+        };
+        let tree = stats.into_tree().unwrap();
+
+        assert_eq!(
+            tree,
+            Tree {
+                key: Key {
+                    filename: "foo.rs".to_string(),
+                    colno: 1,
+                    lineno: 1,
+                    fn_address: std::ptr::null_mut(),
+                    fn_name: "foo".to_string(),
+                },
+                value: 1024 * 2,
+                category: Category::Unknown,
+                children: vec![Tree {
+                    key: Key {
+                        filename: "foo2.rs".to_string(),
+                        colno: 1,
+                        lineno: 1,
+                        fn_address: std::ptr::null_mut(),
+                        fn_name: "foo2".to_string(),
+                    },
+                    value: 1024 * 2,
+                    category: Category::Unknown,
+                    children: vec![Tree {
+                        key: Key {
+                            filename: "foo3.rs".to_string(),
+                            colno: 1,
+                            lineno: 1,
+                            fn_address: std::ptr::null_mut(),
+                            fn_name: "foo3".to_string(),
+                        },
+                        value: 1024 * 2,
+                        category: Category::Unknown,
+                        children: vec![],
+                    }],
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn test_tree_value_3() {
+        let stats = Stats {
+            allocations: vec![
+                Allocation {
+                    size: 1024,
+                    stack: VecDeque::from([
+                        FrameInfo {
+                            filename: Some("foo.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo2.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo2".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo3.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo3".into()),
+                        },
+                    ]),
+                },
+                Allocation {
+                    size: 1024,
+                    stack: VecDeque::from([
+                        FrameInfo {
+                            filename: Some("foo.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo2.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo2".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo3.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo3".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo4.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo4".into()),
+                        },
+                    ]),
+                },
+            ],
+        };
+        let tree = stats.into_tree().unwrap();
+
+        assert_eq!(
+            tree,
+            Tree {
+                key: Key {
+                    filename: "foo.rs".to_string(),
+                    colno: 1,
+                    lineno: 1,
+                    fn_address: std::ptr::null_mut(),
+                    fn_name: "foo".to_string(),
+                },
+                value: 1024 * 2,
+                category: Category::Unknown,
+                children: vec![Tree {
+                    key: Key {
+                        filename: "foo2.rs".to_string(),
+                        colno: 1,
+                        lineno: 1,
+                        fn_address: std::ptr::null_mut(),
+                        fn_name: "foo2".to_string(),
+                    },
+                    value: 1024 * 2,
+                    category: Category::Unknown,
+                    children: vec![Tree {
+                        key: Key {
+                            filename: "foo3.rs".to_string(),
+                            colno: 1,
+                            lineno: 1,
+                            fn_address: std::ptr::null_mut(),
+                            fn_name: "foo3".to_string(),
+                        },
+                        value: 1024 * 2,
+                        category: Category::Unknown,
+                        children: vec![Tree {
+                            key: Key {
+                                filename: "foo4.rs".to_string(),
+                                colno: 1,
+                                lineno: 1,
+                                fn_address: std::ptr::null_mut(),
+                                fn_name: "foo4".to_string(),
+                            },
+                            value: 1024,
+                            category: Category::Unknown,
+                            children: vec![],
+                        }],
+                    }],
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn test_tree_value_4() {
+        let stats = Stats {
+            allocations: vec![
+                Allocation {
+                    size: 1024,
+                    stack: VecDeque::from([
+                        FrameInfo {
+                            filename: Some("foo.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo2.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo2".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo3.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo3".into()),
+                        },
+                    ]),
+                },
+                Allocation {
+                    size: 1024,
+                    stack: VecDeque::from([
+                        FrameInfo {
+                            filename: Some("foo.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo2.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo2".into()),
+                        },
+                        FrameInfo {
+                            filename: Some("foo4.rs".into()),
+                            colno: Some(1),
+                            lineno: Some(1),
+                            fn_address: Some(std::ptr::null_mut()),
+                            fn_name: Some("foo4".into()),
+                        },
+                    ]),
+                },
+            ],
+        };
+        let tree = stats.into_tree().unwrap();
+
+        assert_eq!(
+            tree,
+            Tree {
+                key: Key {
+                    filename: "foo.rs".to_string(),
+                    colno: 1,
+                    lineno: 1,
+                    fn_address: std::ptr::null_mut(),
+                    fn_name: "foo".to_string(),
+                },
+                value: 1024 * 2,
+                category: Category::Unknown,
+                children: vec![Tree {
+                    key: Key {
+                        filename: "foo2.rs".to_string(),
+                        colno: 1,
+                        lineno: 1,
+                        fn_address: std::ptr::null_mut(),
+                        fn_name: "foo2".to_string(),
+                    },
+                    value: 1024 * 2,
+                    category: Category::Unknown,
+                    children: vec![
+                        Tree {
+                            key: Key {
+                                filename: "foo4.rs".to_string(),
+                                colno: 1,
+                                lineno: 1,
+                                fn_address: std::ptr::null_mut(),
+                                fn_name: "foo4".to_string(),
+                            },
+                            value: 1024,
+                            category: Category::Unknown,
+                            children: vec![],
+                        },
+                        Tree {
+                            key: Key {
+                                filename: "foo3.rs".to_string(),
+                                colno: 1,
+                                lineno: 1,
+                                fn_address: std::ptr::null_mut(),
+                                fn_name: "foo3".to_string(),
+                            },
+                            value: 1024,
+                            category: Category::Unknown,
+                            children: vec![],
+                        }
+                    ],
+                }],
+            }
+        );
     }
 }

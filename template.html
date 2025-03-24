@@ -132,9 +132,9 @@ svg {
 
     const tooltip = d3.select(".tooltip");
 
-    const root = d3.hierarchy(data, d => d.children)
-        .sum(d => d.value)
-        .sort((a, b) => b.value - a.value);
+    const root = d3.hierarchy(data, d => d.children);
+    // Set value to the node
+    root.each(d => d.value = d.data.value);
 
     const depth = root.height + 1;
 
@@ -154,7 +154,20 @@ svg {
     zoomLayer.attr("transform", `scale(1, ${scaleY})`);
 
     const categories = [...new Set(root.descendants().map(d => d.data.category))];
-    const colorScale = d3.scaleOrdinal(d3.schemeCategory10).domain(categories);
+    categories.sort((a, b) => a.localeCompare(b));
+    const colorScale = d3.scaleOrdinal([
+      // Re-ordered d3.schemeCategory10
+      "#d62728",  
+      "#ff7f0e",
+      "#1f77b4",
+      "#2ca02c",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22",
+      "#17becf",
+    ]).domain(categories);
 
     const rects = zoomLayer.selectAll("rect")
       .data(root.descendants())
@@ -167,16 +180,19 @@ svg {
       .attr("fill", d => colorScale(d.data.category))
       .attr("stroke", "#fff")
       .on("mouseover", (event, d) => {
+        console.log(d.data)
+        
         tooltip.style("opacity", 1)
             .html(`
             <strong>${d.data.key.filename}</strong><br>
             lineno: ${d.data.key.lineno}<br>
             fn_name: ${d.data.key.fn_name}<br>
-            Value: ${d.value}<br>
+            Value: ${d.data.value}<br>
             Category: ${d.data.category}
             `)
             .style("left", (event.pageX + 10) + "px")
             .style("top", (event.pageY - 10) + "px");
+            
         })
       .on("mousemove", (event) => {
         tooltip.style("left", (event.pageX + 10) + "px")
@@ -186,7 +202,8 @@ svg {
         tooltip.style("opacity", 0);
       });
 
-      zoomLayer.selectAll("text")
+    // Fill box with texts  
+    zoomLayer.selectAll("text")
         .data(root.descendants())
         .enter()
         .append("text")
@@ -200,7 +217,6 @@ svg {
         .text(d => {
             const width = d.x1 - d.x0;
             const text = `${d.data.key.filename}:${d.data.key.lineno}`
-            console.log(width, 10 * text.length)
             return width > 10 * text.length ? text : "";
         });
 
@@ -209,7 +225,6 @@ svg {
         .attr("class", "legend")
         .attr("transform", `translate(${chartWidth + 20}, 20)`);
 
-    console.log({categories});
     categories.forEach((category, i) => {
       const legendRow = legend.append("g")
         .attr("transform", `translate(0, ${i * 25})`)

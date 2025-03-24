@@ -31,16 +31,20 @@ fn foo() {
 }
 
 #[test]
-fn test_check_memory_allocation() {
+fn test_rallo() {
     ALLOCATOR.start_track();
     foo();
     ALLOCATOR.stop_track();
 
     // Safety: it is called after `stop_track`
     let stats = unsafe { ALLOCATOR.calculate_stats() };
-    let tree = stats.into_tree();
+    let tree = stats.into_tree().unwrap();
 
-    tree.print_flamegraph("simple-memory-flamegraph.html");
+    let file_name = "simple-memory-flamegraph.html";
+    let path = std::fs::canonicalize(file_name).unwrap();
+    tree.print_flamegraph(&path);
+
+    println!("Flamegraph saved to {}", path.display());
 }
 ```
 
