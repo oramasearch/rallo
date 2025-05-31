@@ -41,7 +41,7 @@ fn test_stack() {
     let mut stack = vec![tree];
     while let Some(node) = stack.pop() {
         if node.key.filename == current_file && node.key.fn_name.contains("foo") {
-            alloc.push((node.key.clone(), node.value, node.category));
+            alloc.push((node.key.clone(), node.allocation, node.category));
         }
         for child in node.children {
             stack.push(child);
