@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "rallo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "backtrace",
  "pretty_assertions",
