@@ -1,6 +1,6 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     ffi::c_void,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
@@ -170,11 +170,17 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
     /// It is the caller's responsibility to ensure that the allocator is not tracking
     /// allocations when this function is called. Undefined behavior may occur if the allocator
     /// is still tracking allocations.
+    /// Don't call this function concurrently
     ///
     pub unsafe fn calculate_stats(&self) -> Stats {
+
+        let old = self.deallocation_logs_pointer.load(Ordering::SeqCst);
+
         let mut stats = Stats {
             allocations: VecDeque::new(),
         };
+
+        let mut deallocation_visited = HashSet::with_capacity(old);
 
         let index = self.allocation_logs_pointer.load(Ordering::SeqCst);
         for i in 0..index {
@@ -182,18 +188,33 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
 
             let address = log.2;
 
-            let deallocation = self.deallocation_logs.iter().find(|d| {
+            println!(
+                "Allocating {} bytes at address {:x}",
+                log.0,
+                address
+            );
+
+            let a = self.deallocation_logs.iter().find(|d| {
                 let d = unsafe { *d.get() };
                 d.1 == address
             })
-                .map(|d| unsafe { *d.get() })
-                .map(|d| d.0)
-                // No deallocation log found for this address
-                .unwrap_or(0);
+                .map(|d| unsafe { *d.get() });
+            let deallocation_size = match a {
+                    // No deallocation log found for this address
+                    None => {
+                        0
+                    },
+                    Some((size, ptr)) => {
+                        println!("Deallocating {} bytes at address {:x}", size, ptr);
+                        // Mark this deallocation as visited
+                        deallocation_visited.insert(ptr);
+                        size
+                    }
+            };
 
             let mut allocation = Allocation {
                 allocation_size: log.0,
-                deallocation_size: deallocation,
+                deallocation_size,
                 address,
                 stack: VecDeque::new(),
             };
@@ -226,6 +247,11 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
 
             stats.allocations.push_front(allocation);
         }
+
+        self.allocation_logs_pointer.store(0, Ordering::SeqCst);
+        self.deallocation_logs_pointer.store(0, Ordering::SeqCst);
+
+        assert_eq!(old, deallocation_visited.len());
 
         stats
     }
