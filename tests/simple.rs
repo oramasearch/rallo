@@ -41,27 +41,36 @@ fn test_stack() {
     let mut stack = vec![tree];
     while let Some(node) = stack.pop() {
         if node.key.filename == current_file && node.key.fn_name.contains("foo") {
-            alloc.push((node.key.clone(), node.value, node.category));
+            alloc.push((
+                node.key.clone(),
+                node.allocation,
+                node.category,
+                node.allocation,
+                node.deallocation,
+            ));
         }
         for child in node.children {
             stack.push(child);
         }
     }
 
-    // 2 different allocations in the foo function
-    assert_eq!(alloc.len(), 2);
+    println!("Allocations in foo function: {:#?}", alloc);
 
-    let sum = alloc.iter().map(|(_, size, _)| *size).sum::<usize>();
+    // 2 different allocations in the foo function
+    // 1 deallocation
+    assert_eq!(alloc.len(), 3);
+
+    let sum = alloc.iter().map(|(_, size, _, _, _)| *size).sum::<usize>();
     // The exact number depends on the system and the allocator
     // but it should be greater than 2 * 1024
-    // because we have 2 allocations of 1024 bytes
+    // because we have 3 allocations of 1024 bytes
     // and the allocator may add some overhead
     // for the allocation
     assert!(sum >= 1024 * 2);
 
     let file_contents: Vec<_> = alloc
         .iter()
-        .filter_map(|(key, _, _)| key.file_content.clone())
+        .filter_map(|(key, _, _, _, _)| key.file_content.clone())
         .collect();
 
     let highlighteds: Vec<_> = file_contents
@@ -70,10 +79,10 @@ fn test_stack() {
         .collect();
     assert_eq!(
         highlighteds,
-        vec!["let mut s = Box::new(s);", "my_clone(&s);"]
+        vec!["}", "my_clone(&s);", "let mut s = Box::new(s);",]
     );
     let befores: Vec<_> = file_contents.iter().map(|c| c.before.len()).collect();
-    assert_eq!(befores, vec![5, 5]);
+    assert_eq!(befores, vec![5, 5, 5]);
     let afters: Vec<_> = file_contents.iter().map(|c| c.after.len()).collect();
-    assert_eq!(afters, vec![5, 5]);
+    assert_eq!(afters, vec![5, 5, 5]);
 }

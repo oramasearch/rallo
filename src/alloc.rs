@@ -20,7 +20,8 @@ impl FrameWrapper {
     }
 }
 
-type LogType<const MAX_FRAME_LENGTH: usize> = (usize, usize, [FrameWrapper; MAX_FRAME_LENGTH]);
+type LogType<const MAX_FRAME_LENGTH: usize> =
+    (usize, usize, usize, [FrameWrapper; MAX_FRAME_LENGTH]);
 type LogsType<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> =
     [RalloUnsafeCell<LogType<MAX_FRAME_LENGTH>>; MAX_LOG_COUNT];
 
@@ -51,8 +52,10 @@ type LogsType<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> =
 pub struct RalloAllocator<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> {
     is_tracking: AtomicBool,
     alloc: std::alloc::System,
-    logs: LogsType<MAX_FRAME_LENGTH, MAX_LOG_COUNT>,
-    logs_pointer: AtomicUsize,
+    allocation_logs: LogsType<MAX_FRAME_LENGTH, MAX_LOG_COUNT>,
+    allocation_logs_pointer: AtomicUsize,
+    deallocation_logs: LogsType<MAX_FRAME_LENGTH, MAX_LOG_COUNT>,
+    deallocation_logs_pointer: AtomicUsize,
 }
 impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> Default
     for RalloAllocator<MAX_FRAME_LENGTH, MAX_LOG_COUNT>
@@ -69,14 +72,33 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
         RalloAllocator {
             is_tracking: AtomicBool::new(false),
             alloc: std::alloc::System,
-            logs: [const { RalloUnsafeCell::new((0, 0, [FrameWrapper::new(); MAX_FRAME_LENGTH])) };
-                MAX_LOG_COUNT],
-            logs_pointer: AtomicUsize::new(0),
+            allocation_logs: [const {
+                RalloUnsafeCell::new((
+                    0, // size
+                    0, // `backtrace` len (stack depth)
+                    0, // ptr address
+                    [FrameWrapper::new(); MAX_FRAME_LENGTH],
+                ))
+            }; MAX_LOG_COUNT],
+            allocation_logs_pointer: AtomicUsize::new(0),
+            deallocation_logs: [const {
+                RalloUnsafeCell::new((
+                    0, // size
+                    0, // `backtrace` len (stack depth)
+                    0, // ptr address
+                    [FrameWrapper::new(); MAX_FRAME_LENGTH],
+                ))
+            }; MAX_LOG_COUNT],
+            deallocation_logs_pointer: AtomicUsize::new(0),
         }
     }
 
     /// Start recording allocations.
     pub fn start_track(&self) {
+        // Ask the backtrace to allow the backtrace system inizialization
+        // without tracking it.
+        backtrace::trace(|_| true);
+
         self.is_tracking.store(true, Ordering::SeqCst);
     }
 
@@ -86,18 +108,29 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
     }
 
     #[allow(clippy::mut_from_ref)]
-    unsafe fn get_mut(&self, index: usize) -> &mut LogType<MAX_FRAME_LENGTH> {
-        let element = &self.logs[index];
+    unsafe fn get_allocation_item_mut(&self, index: usize) -> &mut LogType<MAX_FRAME_LENGTH> {
+        let element = &self.allocation_logs[index];
         unsafe { (&mut *element.get() as &mut LogType<MAX_FRAME_LENGTH>) as _ }
     }
 
-    unsafe fn get(&self, index: usize) -> &LogType<MAX_FRAME_LENGTH> {
-        let element = &self.logs[index];
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_deallocation_item_mut(&self, index: usize) -> &mut LogType<MAX_FRAME_LENGTH> {
+        let element = &self.deallocation_logs[index];
+        unsafe { (&mut *element.get() as &mut LogType<MAX_FRAME_LENGTH>) as _ }
+    }
+
+    unsafe fn get_allocation_item(&self, index: usize) -> &LogType<MAX_FRAME_LENGTH> {
+        let element = &self.allocation_logs[index];
         unsafe { (&*element.get() as &LogType<MAX_FRAME_LENGTH>) as _ }
     }
 
-    unsafe fn log(&self, layout: &Layout) {
-        let index = self.logs_pointer.fetch_add(1, Ordering::SeqCst);
+    unsafe fn get_deallocation_item(&self, index: usize) -> &LogType<MAX_FRAME_LENGTH> {
+        let element = &self.deallocation_logs[index];
+        unsafe { (&*element.get() as &LogType<MAX_FRAME_LENGTH>) as _ }
+    }
+
+    unsafe fn log_alloc(&self, layout: &Layout, address: usize) {
+        let index = self.allocation_logs_pointer.fetch_add(1, Ordering::SeqCst);
         if index >= MAX_LOG_COUNT {
             panic!(
                 "Log buffer overflow. Maximum log count ({}) exceeded.",
@@ -105,17 +138,47 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
             );
         }
 
-        let log = unsafe { self.get_mut(index) };
+        // Safety: index is incrementally increasing and within bounds
+        // So, we can safely get a mutable reference to the log at this index.
+        let log = unsafe { self.get_allocation_item_mut(index) };
         log.0 = layout.size();
 
         let mut i: usize = 0;
         backtrace::trace(|frame| {
             let ip: *mut c_void = frame.ip();
-            log.2[i].ip = Some(ip as usize);
+            log.3[i].ip = Some(ip as usize);
             i += 1;
             true
         });
         log.1 = i;
+        log.2 = address;
+    }
+
+    unsafe fn log_dealloc(&self, layout: &Layout, address: usize) {
+        let index = self
+            .deallocation_logs_pointer
+            .fetch_add(1, Ordering::SeqCst);
+        if index >= MAX_LOG_COUNT {
+            panic!(
+                "Log buffer overflow. Maximum log count ({}) exceeded.",
+                MAX_LOG_COUNT
+            );
+        }
+
+        // Safety: index is incrementally increasing and within bounds
+        // So, we can safely get a mutable reference to the log at this index.
+        let log = unsafe { self.get_deallocation_item_mut(index) };
+        log.0 = layout.size();
+
+        let mut i: usize = 0;
+        backtrace::trace(|frame| {
+            let ip: *mut c_void = frame.ip();
+            log.3[i].ip = Some(ip as usize);
+            i += 1;
+            true
+        });
+        log.1 = i;
+        log.2 = address;
     }
 
     /// Calculate the statistics of the allocations.
@@ -125,24 +188,30 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
     /// It is the caller's responsibility to ensure that the allocator is not tracking
     /// allocations when this function is called. Undefined behavior may occur if the allocator
     /// is still tracking allocations.
+    /// Don't call this function concurrently
     ///
     pub unsafe fn calculate_stats(&self) -> Stats {
         let mut stats = Stats {
-            allocations: Vec::new(),
+            allocations: VecDeque::new(),
+            deallocations: VecDeque::new(),
         };
 
-        let index = self.logs_pointer.load(Ordering::SeqCst);
+        let index = self.allocation_logs_pointer.load(Ordering::SeqCst);
         for i in 0..index {
-            let log = unsafe { self.get(i) };
+            let log = unsafe { self.get_allocation_item(i) };
+
+            let address = log.2;
 
             let mut allocation = Allocation {
-                size: log.0,
+                allocation_size: log.0,
+                deallocation_size: 0,
+                address,
                 stack: VecDeque::new(),
             };
 
             let stack_size = log.1;
             for j in 0..stack_size {
-                let frame = &log.2[j];
+                let frame = &log.3[j];
                 let ip = frame.ip.unwrap() as *mut c_void;
 
                 let mut filename: Option<std::path::PathBuf> = None;
@@ -166,8 +235,52 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
                 });
             }
 
-            stats.allocations.push(allocation);
+            stats.allocations.push_front(allocation);
         }
+
+        let index = self.deallocation_logs_pointer.load(Ordering::SeqCst);
+        for i in 0..index {
+            let log = unsafe { self.get_deallocation_item(i) };
+
+            let address = log.2;
+            let mut deallocation = Allocation {
+                allocation_size: 0,
+                deallocation_size: log.0,
+                address,
+                stack: VecDeque::new(),
+            };
+
+            let stack_size = log.1;
+            for j in 0..stack_size {
+                let frame = &log.3[j];
+                let ip = frame.ip.unwrap() as *mut c_void;
+
+                let mut filename: Option<std::path::PathBuf> = None;
+                let mut colno: Option<u32> = None;
+                let mut lineno: Option<u32> = None;
+                let mut fn_address: Option<*mut c_void> = None;
+                let mut fn_name: Option<String> = None;
+                backtrace::resolve(ip, |s| {
+                    filename = s.filename().map(|f| f.to_owned());
+                    colno = s.colno();
+                    lineno = s.lineno();
+                    fn_address = s.addr();
+                    fn_name = s.name().and_then(|s| s.as_str()).map(|s| s.to_string());
+                });
+                deallocation.stack.push_front(FrameInfo {
+                    filename,
+                    colno,
+                    lineno,
+                    fn_address,
+                    fn_name,
+                });
+            }
+
+            stats.deallocations.push_front(deallocation);
+        }
+
+        self.allocation_logs_pointer.store(0, Ordering::SeqCst);
+        self.deallocation_logs_pointer.store(0, Ordering::SeqCst);
 
         stats
     }
@@ -177,15 +290,24 @@ unsafe impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> GlobalAll
     for RalloAllocator<MAX_FRAME_LENGTH, MAX_LOG_COUNT>
 {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { self.alloc.alloc(layout) };
+
         // Don't track allocations if not enabled
         if self.is_tracking.load(Ordering::SeqCst) {
-            unsafe { self.log(&layout) };
+            let address = ptr as usize;
+            unsafe { self.log_alloc(&layout, address) };
         }
 
-        unsafe { self.alloc.alloc(layout) }
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Don't track allocations if not enabled
+        if self.is_tracking.load(Ordering::SeqCst) {
+            let address = ptr as usize;
+            unsafe { self.log_dealloc(&layout, address) };
+        }
+
         unsafe { self.alloc.dealloc(ptr, layout) }
     }
 }

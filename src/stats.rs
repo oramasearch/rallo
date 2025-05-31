@@ -19,7 +19,11 @@ pub struct FrameInfo {
 #[derive(Debug)]
 pub struct Allocation {
     /// Allocation size
-    pub size: usize,
+    pub allocation_size: usize,
+    /// Deallocation size
+    pub deallocation_size: usize,
+    /// address of the allocation
+    pub address: usize,
     /// Stack trace
     pub stack: VecDeque<FrameInfo>,
 }
@@ -27,7 +31,9 @@ pub struct Allocation {
 #[derive(Debug)]
 pub struct Stats {
     /// Allocations
-    pub allocations: Vec<Allocation>,
+    pub allocations: VecDeque<Allocation>,
+    /// Deallocations
+    pub deallocations: VecDeque<Allocation>,
 }
 
 impl Stats {
@@ -37,7 +43,7 @@ impl Stats {
             .map_err(|e| format!("failed to get current directory: {:?}", e))?;
         let cwd = cwd.to_str().ok_or("current directory is not valid UTF-8")?;
 
-        let allocation = match self.allocations.pop() {
+        let allocation = match self.allocations.pop_back() {
             None => {
                 return Err("no allocations".into());
             }
@@ -61,7 +67,8 @@ impl Stats {
         let mut tree = Tree {
             category: guess_category(cwd, initial_key.filename.as_str()),
             key: initial_key.clone(),
-            value: 0,
+            allocation: 0,
+            deallocation: 0,
             children: Vec::new(),
         };
         let mut pointer = &mut tree;
@@ -76,11 +83,13 @@ impl Stats {
             let mut c = Tree {
                 category: guess_category(cwd, key.filename.as_str()),
                 key,
-                value: 0,
+                allocation: 0,
+                deallocation: 0,
                 children: Vec::new(),
             };
             if is_last {
-                c.value += allocation.size;
+                c.allocation += allocation.allocation_size;
+                c.deallocation += allocation.deallocation_size;
             }
             pointer.children.push(c);
             pointer = pointer.children.last_mut().unwrap();
@@ -123,7 +132,8 @@ impl Stats {
                     let c = Tree {
                         category: guess_category(cwd, key.filename.as_str()),
                         key,
-                        value: 0,
+                        allocation: 0,
+                        deallocation: 0,
                         children: Vec::new(),
                     };
                     pointer.children.push(c);
@@ -132,7 +142,61 @@ impl Stats {
 
                 // Put the effort only on the last frame
                 if is_last {
-                    pointer.value += allocation.size;
+                    pointer.allocation += allocation.allocation_size;
+                    pointer.deallocation += allocation.deallocation_size;
+                }
+            }
+        }
+
+        for mut allocation in self.deallocations {
+            let mut pointer = &mut tree;
+
+            // Ensure the first frame of the allocation is the same as the first frame of the tree
+            // Otherwise we have 2 roots.
+            // Technically we should merge the "root" tree with the current one.
+            // But, it is effortly to do so.
+            // So we just panic.
+            let first_key: Key = loop {
+                let s = match allocation.stack.pop_front() {
+                    None => panic!("stack is empty"),
+                    Some(s) => s,
+                };
+                match s.try_into() {
+                    Ok(k) => break k,
+                    Err(_) => continue,
+                };
+            };
+            if first_key != initial_key {
+                panic!("first frame of allocation is not the same as the first frame of the tree");
+            }
+
+            let stack_len = allocation.stack.len();
+            for (index, info) in allocation.stack.into_iter().enumerate() {
+                let is_last = stack_len == index + 1;
+                let key: Key = match info.try_into() {
+                    Ok(key) => key,
+                    Err(_) => continue,
+                };
+
+                let found = pointer.children.iter().position(|c| c.key == key);
+                pointer = if let Some(found) = found {
+                    pointer.children.get_mut(found).unwrap()
+                } else {
+                    let c = Tree {
+                        category: guess_category(cwd, key.filename.as_str()),
+                        key,
+                        allocation: 0,
+                        deallocation: 0,
+                        children: Vec::new(),
+                    };
+                    pointer.children.push(c);
+                    pointer.children.last_mut().unwrap()
+                };
+
+                // Put the effort only on the last frame
+                if is_last {
+                    pointer.allocation += allocation.allocation_size;
+                    pointer.deallocation += allocation.deallocation_size;
                 }
             }
         }
@@ -226,7 +290,8 @@ impl TryFrom<FrameInfo> for Key {
 /// Tree structure for the flamegraph
 pub struct Tree<K: Debug + Serialize> {
     pub key: K,
-    pub value: usize,
+    pub allocation: usize,
+    pub deallocation: usize,
     pub category: Category,
     pub children: Vec<Tree<K>>,
 }
@@ -244,12 +309,15 @@ impl<K: Debug + Serialize> Tree<K> {
     }
 
     fn update_value(&mut self) {
-        let mut value = 0;
+        let mut allocation = 0;
+        let mut deallocation = 0;
         for child in &mut self.children {
             child.update_value();
-            value += child.value;
+            allocation += child.allocation;
+            deallocation += child.deallocation;
         }
-        self.value += value;
+        self.allocation += allocation;
+        self.deallocation += deallocation;
     }
 }
 
@@ -295,8 +363,11 @@ mod test {
     #[test]
     fn test_tree_value_1() {
         let stats = Stats {
-            allocations: vec![Allocation {
-                size: 1024,
+            deallocations: VecDeque::new(),
+            allocations: VecDeque::from([Allocation {
+                allocation_size: 1024,
+                deallocation_size: 0,
+                address: 0,
                 stack: VecDeque::from([
                     FrameInfo {
                         filename: Some("foo.rs".into()),
@@ -320,7 +391,7 @@ mod test {
                         fn_name: Some("foo3".into()),
                     },
                 ]),
-            }],
+            }]),
         };
         let tree = stats.into_tree().unwrap();
 
@@ -335,7 +406,8 @@ mod test {
                     fn_name: "foo".to_string(),
                     file_content: None,
                 },
-                value: 1024,
+                allocation: 1024,
+                deallocation: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -346,7 +418,8 @@ mod test {
                         fn_name: "foo2".to_string(),
                         file_content: None,
                     },
-                    value: 1024,
+                    allocation: 1024,
+                    deallocation: 0,
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
@@ -357,7 +430,8 @@ mod test {
                             fn_name: "foo3".to_string(),
                             file_content: None,
                         },
-                        value: 1024,
+                        allocation: 1024,
+                        deallocation: 0,
                         category: Category::Unknown,
                         children: vec![],
                     }],
@@ -369,9 +443,12 @@ mod test {
     #[test]
     fn test_tree_value_2() {
         let stats = Stats {
-            allocations: vec![
+            deallocations: VecDeque::new(),
+            allocations: VecDeque::from([
                 Allocation {
-                    size: 1024,
+                    allocation_size: 1024,
+                    deallocation_size: 0,
+                    address: 0,
                     stack: VecDeque::from([
                         FrameInfo {
                             filename: Some("foo.rs".into()),
@@ -397,7 +474,9 @@ mod test {
                     ]),
                 },
                 Allocation {
-                    size: 1024,
+                    allocation_size: 1024,
+                    deallocation_size: 0,
+                    address: 0,
                     stack: VecDeque::from([
                         FrameInfo {
                             filename: Some("foo.rs".into()),
@@ -422,7 +501,7 @@ mod test {
                         },
                     ]),
                 },
-            ],
+            ]),
         };
         let tree = stats.into_tree().unwrap();
 
@@ -437,7 +516,8 @@ mod test {
                     fn_name: "foo".to_string(),
                     file_content: None,
                 },
-                value: 1024 * 2,
+                allocation: 1024 * 2,
+                deallocation: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -448,7 +528,8 @@ mod test {
                         fn_name: "foo2".to_string(),
                         file_content: None,
                     },
-                    value: 1024 * 2,
+                    allocation: 1024 * 2,
+                    deallocation: 0,
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
@@ -459,7 +540,8 @@ mod test {
                             fn_name: "foo3".to_string(),
                             file_content: None,
                         },
-                        value: 1024 * 2,
+                        allocation: 1024 * 2,
+                        deallocation: 0,
                         category: Category::Unknown,
                         children: vec![],
                     }],
@@ -471,9 +553,12 @@ mod test {
     #[test]
     fn test_tree_value_3() {
         let stats = Stats {
-            allocations: vec![
+            deallocations: VecDeque::new(),
+            allocations: VecDeque::from([
                 Allocation {
-                    size: 1024,
+                    allocation_size: 1024,
+                    deallocation_size: 0,
+                    address: 0,
                     stack: VecDeque::from([
                         FrameInfo {
                             filename: Some("foo.rs".into()),
@@ -499,7 +584,9 @@ mod test {
                     ]),
                 },
                 Allocation {
-                    size: 1024,
+                    allocation_size: 1024,
+                    deallocation_size: 0,
+                    address: 0,
                     stack: VecDeque::from([
                         FrameInfo {
                             filename: Some("foo.rs".into()),
@@ -531,7 +618,7 @@ mod test {
                         },
                     ]),
                 },
-            ],
+            ]),
         };
         let tree = stats.into_tree().unwrap();
 
@@ -546,7 +633,8 @@ mod test {
                     fn_name: "foo".to_string(),
                     file_content: None,
                 },
-                value: 1024 * 2,
+                allocation: 1024 * 2,
+                deallocation: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -557,7 +645,8 @@ mod test {
                         fn_name: "foo2".to_string(),
                         file_content: None,
                     },
-                    value: 1024 * 2,
+                    allocation: 1024 * 2,
+                    deallocation: 0,
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
@@ -568,7 +657,8 @@ mod test {
                             fn_name: "foo3".to_string(),
                             file_content: None,
                         },
-                        value: 1024 * 2,
+                        allocation: 1024 * 2,
+                        deallocation: 0,
                         category: Category::Unknown,
                         children: vec![Tree {
                             key: Key {
@@ -579,7 +669,8 @@ mod test {
                                 fn_name: "foo4".to_string(),
                                 file_content: None,
                             },
-                            value: 1024,
+                            allocation: 1024,
+                            deallocation: 0,
                             category: Category::Unknown,
                             children: vec![],
                         }],
@@ -592,9 +683,12 @@ mod test {
     #[test]
     fn test_tree_value_4() {
         let stats = Stats {
-            allocations: vec![
+            deallocations: VecDeque::new(),
+            allocations: VecDeque::from([
                 Allocation {
-                    size: 1024,
+                    allocation_size: 1024,
+                    deallocation_size: 0,
+                    address: 0,
                     stack: VecDeque::from([
                         FrameInfo {
                             filename: Some("foo.rs".into()),
@@ -620,7 +714,9 @@ mod test {
                     ]),
                 },
                 Allocation {
-                    size: 1024,
+                    allocation_size: 1024,
+                    deallocation_size: 0,
+                    address: 0,
                     stack: VecDeque::from([
                         FrameInfo {
                             filename: Some("foo.rs".into()),
@@ -645,7 +741,7 @@ mod test {
                         },
                     ]),
                 },
-            ],
+            ]),
         };
         let tree = stats.into_tree().unwrap();
 
@@ -660,7 +756,8 @@ mod test {
                     fn_name: "foo".to_string(),
                     file_content: None,
                 },
-                value: 1024 * 2,
+                allocation: 1024 * 2,
+                deallocation: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -671,7 +768,8 @@ mod test {
                         fn_name: "foo2".to_string(),
                         file_content: None,
                     },
-                    value: 1024 * 2,
+                    allocation: 1024 * 2,
+                    deallocation: 0,
                     category: Category::Unknown,
                     children: vec![
                         Tree {
@@ -683,7 +781,8 @@ mod test {
                                 fn_name: "foo4".to_string(),
                                 file_content: None,
                             },
-                            value: 1024,
+                            allocation: 1024,
+                            deallocation: 0,
                             category: Category::Unknown,
                             children: vec![],
                         },
@@ -696,7 +795,8 @@ mod test {
                                 fn_name: "foo3".to_string(),
                                 file_content: None,
                             },
-                            value: 1024,
+                            allocation: 1024,
+                            deallocation: 0,
                             category: Category::Unknown,
                             children: vec![],
                         }

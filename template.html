@@ -117,7 +117,7 @@
 
     const root = d3.hierarchy(data, d => d.children);
     // Set value to the node
-    root.each(d => d.value = d.data.value);
+    root.each(d => d.value = d.data.allocation);
 
     const depth = root.height + 1;
 
@@ -178,7 +178,9 @@ ${d.data.key.file_content.after.join('\n')}
             <strong>${d.data.key.filename}</strong><br>
             lineno: ${d.data.key.lineno}<br>
             fn_name: ${d.data.key.fn_name}<br>
-            Value: ${d.data.value}<br>
+            Allocation: ${d.data.allocation}<br>
+            Deallocation: ${d.data.deallocation}<br>
+            Allocation diff: ${Number(d.data.allocation) - Number(d.data.deallocation)}<br>
             Category: ${d.data.category}
             ${code}
             `);
