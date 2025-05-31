@@ -32,6 +32,8 @@ pub struct Allocation {
 pub struct Stats {
     /// Allocations
     pub allocations: VecDeque<Allocation>,
+    /// Deallocations
+    pub deallocations: VecDeque<Allocation>,
 }
 
 impl Stats {
@@ -94,6 +96,59 @@ impl Stats {
         }
 
         for mut allocation in self.allocations {
+            let mut pointer = &mut tree;
+
+            // Ensure the first frame of the allocation is the same as the first frame of the tree
+            // Otherwise we have 2 roots.
+            // Technically we should merge the "root" tree with the current one.
+            // But, it is effortly to do so.
+            // So we just panic.
+            let first_key: Key = loop {
+                let s = match allocation.stack.pop_front() {
+                    None => panic!("stack is empty"),
+                    Some(s) => s,
+                };
+                match s.try_into() {
+                    Ok(k) => break k,
+                    Err(_) => continue,
+                };
+            };
+            if first_key != initial_key {
+                panic!("first frame of allocation is not the same as the first frame of the tree");
+            }
+
+            let stack_len = allocation.stack.len();
+            for (index, info) in allocation.stack.into_iter().enumerate() {
+                let is_last = stack_len == index + 1;
+                let key: Key = match info.try_into() {
+                    Ok(key) => key,
+                    Err(_) => continue,
+                };
+
+                let found = pointer.children.iter().position(|c| c.key == key);
+                pointer = if let Some(found) = found {
+                    pointer.children.get_mut(found).unwrap()
+                } else {
+                    let c = Tree {
+                        category: guess_category(cwd, key.filename.as_str()),
+                        key,
+                        allocation: 0,
+                        deallocation: 0,
+                        children: Vec::new(),
+                    };
+                    pointer.children.push(c);
+                    pointer.children.last_mut().unwrap()
+                };
+
+                // Put the effort only on the last frame
+                if is_last {
+                    pointer.allocation += allocation.allocation_size;
+                    pointer.deallocation += allocation.deallocation_size;
+                }
+            }
+        }
+
+        for mut allocation in self.deallocations {
             let mut pointer = &mut tree;
 
             // Ensure the first frame of the allocation is the same as the first frame of the tree
@@ -308,6 +363,7 @@ mod test {
     #[test]
     fn test_tree_value_1() {
         let stats = Stats {
+            deallocations: VecDeque::new(),
             allocations: VecDeque::from([Allocation {
                 allocation_size: 1024,
                 deallocation_size: 0,
@@ -387,6 +443,7 @@ mod test {
     #[test]
     fn test_tree_value_2() {
         let stats = Stats {
+            deallocations: VecDeque::new(),
             allocations: VecDeque::from([
                 Allocation {
                     allocation_size: 1024,
@@ -496,6 +553,7 @@ mod test {
     #[test]
     fn test_tree_value_3() {
         let stats = Stats {
+            deallocations: VecDeque::new(),
             allocations: VecDeque::from([
                 Allocation {
                     allocation_size: 1024,
@@ -625,6 +683,7 @@ mod test {
     #[test]
     fn test_tree_value_4() {
         let stats = Stats {
+            deallocations: VecDeque::new(),
             allocations: VecDeque::from([
                 Allocation {
                     allocation_size: 1024,
