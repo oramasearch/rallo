@@ -178,8 +178,8 @@ ${d.data.key.file_content.after.join('\n')}
             <strong>${d.data.key.filename}</strong><br>
             lineno: ${d.data.key.lineno}<br>
             fn_name: ${d.data.key.fn_name}<br>
-            Allocation: ${d.data.allocation}<br>
-            Deallocation: ${d.data.deallocation}<br>
+            Allocation: ${d.data.allocation} bytes (count ${d.data.allocation_count})<br>
+            Deallocation: ${d.data.deallocation} bytes (count ${d.data.deallocation_count})<br>
             Allocation diff: ${Number(d.data.allocation) - Number(d.data.deallocation)}<br>
             Category: ${d.data.category}
             ${code}

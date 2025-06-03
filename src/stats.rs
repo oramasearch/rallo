@@ -68,7 +68,9 @@ impl Stats {
             category: guess_category(cwd, initial_key.filename.as_str()),
             key: initial_key.clone(),
             allocation: 0,
+            allocation_count: 0,
             deallocation: 0,
+            deallocation_count: 0,
             children: Vec::new(),
         };
         let mut pointer = &mut tree;
@@ -84,11 +86,14 @@ impl Stats {
                 category: guess_category(cwd, key.filename.as_str()),
                 key,
                 allocation: 0,
+                allocation_count: 0,
                 deallocation: 0,
+                deallocation_count: 0,
                 children: Vec::new(),
             };
             if is_last {
                 c.allocation += allocation.allocation_size;
+                c.allocation_count += 1;
                 c.deallocation += allocation.deallocation_size;
             }
             pointer.children.push(c);
@@ -133,7 +138,9 @@ impl Stats {
                         category: guess_category(cwd, key.filename.as_str()),
                         key,
                         allocation: 0,
+                        allocation_count: 0,
                         deallocation: 0,
+                        deallocation_count: 0,
                         children: Vec::new(),
                     };
                     pointer.children.push(c);
@@ -144,6 +151,7 @@ impl Stats {
                 if is_last {
                     pointer.allocation += allocation.allocation_size;
                     pointer.deallocation += allocation.deallocation_size;
+                    pointer.allocation_count += 1;
                 }
             }
         }
@@ -186,7 +194,9 @@ impl Stats {
                         category: guess_category(cwd, key.filename.as_str()),
                         key,
                         allocation: 0,
+                        allocation_count: 0,
                         deallocation: 0,
+                        deallocation_count: 0,
                         children: Vec::new(),
                     };
                     pointer.children.push(c);
@@ -197,6 +207,7 @@ impl Stats {
                 if is_last {
                     pointer.allocation += allocation.allocation_size;
                     pointer.deallocation += allocation.deallocation_size;
+                    pointer.deallocation_count += 1;
                 }
             }
         }
@@ -291,7 +302,9 @@ impl TryFrom<FrameInfo> for Key {
 pub struct Tree<K: Debug + Serialize> {
     pub key: K,
     pub allocation: usize,
+    pub allocation_count: usize,
     pub deallocation: usize,
+    pub deallocation_count: usize,
     pub category: Category,
     pub children: Vec<Tree<K>>,
 }
@@ -310,14 +323,24 @@ impl<K: Debug + Serialize> Tree<K> {
 
     fn update_value(&mut self) {
         let mut allocation = 0;
+        let mut allocation_count = 0;
         let mut deallocation = 0;
+        let mut deallocation_count = 0;
         for child in &mut self.children {
             child.update_value();
             allocation += child.allocation;
+            if child.allocation > 0 {
+                allocation_count += child.allocation_count;
+            }
             deallocation += child.deallocation;
+            if child.deallocation > 0 {
+                deallocation_count += child.deallocation_count;
+            }
         }
         self.allocation += allocation;
+        self.allocation_count += allocation_count;
         self.deallocation += deallocation;
+        self.deallocation_count += deallocation_count;
     }
 }
 
@@ -407,7 +430,9 @@ mod test {
                     file_content: None,
                 },
                 allocation: 1024,
+                allocation_count: 1,
                 deallocation: 0,
+                deallocation_count: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -419,7 +444,9 @@ mod test {
                         file_content: None,
                     },
                     allocation: 1024,
+                    allocation_count: 1,
                     deallocation: 0,
+                    deallocation_count: 0,
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
@@ -431,7 +458,9 @@ mod test {
                             file_content: None,
                         },
                         allocation: 1024,
+                        allocation_count: 1,
                         deallocation: 0,
+                        deallocation_count: 0,
                         category: Category::Unknown,
                         children: vec![],
                     }],
@@ -517,7 +546,9 @@ mod test {
                     file_content: None,
                 },
                 allocation: 1024 * 2,
+                allocation_count: 2,
                 deallocation: 0,
+                deallocation_count: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -529,7 +560,9 @@ mod test {
                         file_content: None,
                     },
                     allocation: 1024 * 2,
+                    allocation_count: 2,
                     deallocation: 0,
+                    deallocation_count: 0,
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
@@ -541,7 +574,9 @@ mod test {
                             file_content: None,
                         },
                         allocation: 1024 * 2,
+                        allocation_count: 2,
                         deallocation: 0,
+                        deallocation_count: 0,
                         category: Category::Unknown,
                         children: vec![],
                     }],
@@ -634,7 +669,9 @@ mod test {
                     file_content: None,
                 },
                 allocation: 1024 * 2,
+                allocation_count: 2,
                 deallocation: 0,
+                deallocation_count: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -646,7 +683,9 @@ mod test {
                         file_content: None,
                     },
                     allocation: 1024 * 2,
+                    allocation_count: 2,
                     deallocation: 0,
+                    deallocation_count: 0,
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
@@ -658,7 +697,9 @@ mod test {
                             file_content: None,
                         },
                         allocation: 1024 * 2,
+                        allocation_count: 2,
                         deallocation: 0,
+                        deallocation_count: 0,
                         category: Category::Unknown,
                         children: vec![Tree {
                             key: Key {
@@ -670,7 +711,9 @@ mod test {
                                 file_content: None,
                             },
                             allocation: 1024,
+                            allocation_count: 1,
                             deallocation: 0,
+                            deallocation_count: 0,
                             category: Category::Unknown,
                             children: vec![],
                         }],
@@ -757,7 +800,9 @@ mod test {
                     file_content: None,
                 },
                 allocation: 1024 * 2,
+                allocation_count: 2,
                 deallocation: 0,
+                deallocation_count: 0,
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
@@ -769,7 +814,9 @@ mod test {
                         file_content: None,
                     },
                     allocation: 1024 * 2,
+                    allocation_count: 2,
                     deallocation: 0,
+                    deallocation_count: 0,
                     category: Category::Unknown,
                     children: vec![
                         Tree {
@@ -782,7 +829,9 @@ mod test {
                                 file_content: None,
                             },
                             allocation: 1024,
+                            allocation_count: 1,
                             deallocation: 0,
+                            deallocation_count: 0,
                             category: Category::Unknown,
                             children: vec![],
                         },
@@ -796,7 +845,9 @@ mod test {
                                 file_content: None,
                             },
                             allocation: 1024,
+                            allocation_count: 1,
                             deallocation: 0,
+                            deallocation_count: 0,
                             category: Category::Unknown,
                             children: vec![],
                         }

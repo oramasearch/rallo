@@ -41,7 +41,7 @@ fn test_rallo() {
     let tree = stats.into_tree().unwrap();
 
     let file_name = "simple-memory-flamegraph.html";
-    let path = std::fs::canonicalize(file_name).unwrap();
+    let path = std::env::current_dir().unwrap().join(file_name);
     tree.print_flamegraph(&path);
 
     println!("Flamegraph saved to {}", path.display());
