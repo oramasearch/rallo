@@ -40,7 +40,7 @@ impl Stats {
     /// Transform the raw stats into a tree structure
     pub fn into_tree(mut self) -> Result<Tree<Key>, Cow<'static, str>> {
         let cwd = std::env::current_dir()
-            .map_err(|e| format!("failed to get current directory: {:?}", e))?;
+            .map_err(|e| format!("failed to get current directory: {e:?}"))?;
         let cwd = cwd.to_str().ok_or("current directory is not valid UTF-8")?;
 
         let allocation = match self.allocations.pop_back() {
@@ -55,7 +55,9 @@ impl Stats {
         let initial_key = loop {
             let root = stack.pop_front();
             let root = match root {
-                None => panic!("stack is empty"),
+                None => panic!(
+                    "No simbols are found. Try to run again with debug symbols (like no release mode)"
+                ),
                 Some(root) => root,
             };
             let key = TryInto::<Key>::try_into(root);
@@ -110,7 +112,9 @@ impl Stats {
             // So we just panic.
             let first_key: Key = loop {
                 let s = match allocation.stack.pop_front() {
-                    None => panic!("stack is empty"),
+                    None => panic!(
+                        "stack is empty (3). Please, report a bug at https://github.com/oramasearch/rallo/issues"
+                    ),
                     Some(s) => s,
                 };
                 match s.try_into() {
@@ -166,7 +170,9 @@ impl Stats {
             // So we just panic.
             let first_key: Key = loop {
                 let s = match allocation.stack.pop_front() {
-                    None => panic!("stack is empty"),
+                    None => panic!(
+                        "stack is empty (3). Please, report a bug at https://github.com/oramasearch/rallo/issues"
+                    ),
                     Some(s) => s,
                 };
                 match s.try_into() {

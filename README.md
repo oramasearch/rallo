@@ -32,7 +32,8 @@ fn foo() {
 
 #[test]
 fn test_rallo() {
-    ALLOCATOR.start_track();
+    // Safety: the program is single-threaded
+    unsafe { ALLOCATOR.start_track() };
     foo();
     ALLOCATOR.stop_track();
 

@@ -27,7 +27,7 @@ fn foo() -> u32 {
 }
 
 fn main() {
-    ALLOCATOR.start_track();
+    unsafe { ALLOCATOR.start_track() };
     foo();
     ALLOCATOR.stop_track();
 

@@ -23,7 +23,7 @@ fn foo() {
 
 #[test]
 fn test_stack() {
-    ALLOCATOR.start_track();
+    unsafe { ALLOCATOR.start_track() };
     foo();
     ALLOCATOR.stop_track();
 

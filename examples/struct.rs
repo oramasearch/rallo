@@ -23,7 +23,8 @@ impl Foo {
 
 fn main() {
     let mut f = Foo::new();
-    ALLOCATOR.start_track();
+    // Safety: the program is single-threaded
+    unsafe { ALLOCATOR.start_track() };
     for i in 0..100 {
         f.add(i);
     }
