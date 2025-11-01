@@ -102,29 +102,8 @@ impl Stats {
             pointer = pointer.children.last_mut().unwrap();
         }
 
-        for mut allocation in self.allocations {
+        for allocation in self.allocations {
             let mut pointer = &mut tree;
-
-            // Ensure the first frame of the allocation is the same as the first frame of the tree
-            // Otherwise we have 2 roots.
-            // Technically we should merge the "root" tree with the current one.
-            // But, it is effortly to do so.
-            // So we just panic.
-            let first_key: Key = loop {
-                let s = match allocation.stack.pop_front() {
-                    None => panic!(
-                        "stack is empty (3). Please, report a bug at https://github.com/oramasearch/rallo/issues"
-                    ),
-                    Some(s) => s,
-                };
-                match s.try_into() {
-                    Ok(k) => break k,
-                    Err(_) => continue,
-                };
-            };
-            if first_key != initial_key {
-                panic!("first frame of allocation is not the same as the first frame of the tree");
-            }
 
             let stack_len = allocation.stack.len();
             for (index, info) in allocation.stack.into_iter().enumerate() {
@@ -160,29 +139,8 @@ impl Stats {
             }
         }
 
-        for mut allocation in self.deallocations {
+        for allocation in self.deallocations {
             let mut pointer = &mut tree;
-
-            // Ensure the first frame of the allocation is the same as the first frame of the tree
-            // Otherwise we have 2 roots.
-            // Technically we should merge the "root" tree with the current one.
-            // But, it is effortly to do so.
-            // So we just panic.
-            let first_key: Key = loop {
-                let s = match allocation.stack.pop_front() {
-                    None => panic!(
-                        "stack is empty (3). Please, report a bug at https://github.com/oramasearch/rallo/issues"
-                    ),
-                    Some(s) => s,
-                };
-                match s.try_into() {
-                    Ok(k) => break k,
-                    Err(_) => continue,
-                };
-            };
-            if first_key != initial_key {
-                panic!("first frame of allocation is not the same as the first frame of the tree");
-            }
 
             let stack_len = allocation.stack.len();
             for (index, info) in allocation.stack.into_iter().enumerate() {
