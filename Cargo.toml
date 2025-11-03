@@ -1,7 +1,7 @@
 [package]
 name = "rallo"
 description = "Rust allocator for tracking memory usage"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 license = "MIT"
 keywords = [ "profiling", "memory", "allocation", "tracking", "allocator" ]
