@@ -14,7 +14,7 @@ fn my_clone(s: &Box<[u8; 1024]>) {
 }
 
 #[inline(never)]
-fn foo() {
+fn run() {
     let s = [0_u8; 1024];
     let mut s = Box::new(s);
     s[0] = 1;
@@ -24,7 +24,7 @@ fn foo() {
 #[test]
 fn test_stack() {
     unsafe { ALLOCATOR.start_track() };
-    foo();
+    run();
     ALLOCATOR.stop_track();
 
     // Safety: it is called after `stop_track`

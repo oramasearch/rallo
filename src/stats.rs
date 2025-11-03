@@ -38,72 +38,30 @@ pub struct Stats {
 
 impl Stats {
     /// Transform the raw stats into a tree structure
-    pub fn into_tree(mut self) -> Result<Tree<Key>, Cow<'static, str>> {
+    pub fn into_tree(self) -> Result<Tree<Key>, Cow<'static, str>> {
         let cwd = std::env::current_dir()
             .map_err(|e| format!("failed to get current directory: {e:?}"))?;
         let cwd = cwd.to_str().ok_or("current directory is not valid UTF-8")?;
 
-        let allocation = match self.allocations.pop_back() {
-            None => {
-                return Err("no allocations".into());
-            }
-            Some(allocation) => allocation,
-        };
-
-        let mut stack = allocation.stack;
-
-        let initial_key = loop {
-            let root = stack.pop_front();
-            let root = match root {
-                None => panic!(
-                    "No simbols are found. Try to run again with debug symbols (like no release mode)"
-                ),
-                Some(root) => root,
-            };
-            let key = TryInto::<Key>::try_into(root);
-            if let Ok(key) = key {
-                break key;
-            }
-        };
-
-        let mut tree = Tree {
-            category: guess_category(cwd, initial_key.filename.as_str()),
-            key: initial_key.clone(),
+        let mut root = Tree {
+            category: Category::Unknown,
+            key: Key {
+                filename: "<root>".to_string(),
+                colno: 0,
+                lineno: 0,
+                fn_address: std::ptr::null_mut(),
+                fn_name: "<root>".to_string(),
+                file_content: None,
+            },
             allocation: 0,
             allocation_count: 0,
             deallocation: 0,
             deallocation_count: 0,
             children: Vec::new(),
         };
-        let mut pointer = &mut tree;
-        let stack_len = stack.len();
-        for (index, info) in stack.into_iter().enumerate() {
-            let is_last = stack_len == index + 1;
-            let key: Key = match info.try_into() {
-                Ok(key) => key,
-                Err(_) => continue,
-            };
-
-            let mut c = Tree {
-                category: guess_category(cwd, key.filename.as_str()),
-                key,
-                allocation: 0,
-                allocation_count: 0,
-                deallocation: 0,
-                deallocation_count: 0,
-                children: Vec::new(),
-            };
-            if is_last {
-                c.allocation += allocation.allocation_size;
-                c.allocation_count += 1;
-                c.deallocation += allocation.deallocation_size;
-            }
-            pointer.children.push(c);
-            pointer = pointer.children.last_mut().unwrap();
-        }
 
         for allocation in self.allocations {
-            let mut pointer = &mut tree;
+            let mut pointer = &mut root;
 
             let stack_len = allocation.stack.len();
             for (index, info) in allocation.stack.into_iter().enumerate() {
@@ -139,11 +97,11 @@ impl Stats {
             }
         }
 
-        for allocation in self.deallocations {
-            let mut pointer = &mut tree;
+        for deallocation in self.deallocations {
+            let mut pointer = &mut root;
 
-            let stack_len = allocation.stack.len();
-            for (index, info) in allocation.stack.into_iter().enumerate() {
+            let stack_len = deallocation.stack.len();
+            for (index, info) in deallocation.stack.into_iter().enumerate() {
                 let is_last = stack_len == index + 1;
                 let key: Key = match info.try_into() {
                     Ok(key) => key,
@@ -169,16 +127,16 @@ impl Stats {
 
                 // Put the effort only on the last frame
                 if is_last {
-                    pointer.allocation += allocation.allocation_size;
-                    pointer.deallocation += allocation.deallocation_size;
+                    pointer.allocation += deallocation.allocation_size;
+                    pointer.deallocation += deallocation.deallocation_size;
                     pointer.deallocation_count += 1;
                 }
             }
         }
 
-        tree.update_value();
+        root.update_value();
 
-        Ok(tree)
+        Ok(root)
     }
 }
 
@@ -204,59 +162,70 @@ impl TryFrom<FrameInfo> for Key {
     type Error = &'static str;
 
     fn try_from(value: FrameInfo) -> Result<Self, Self::Error> {
-        let filename = value.filename.ok_or("filename is None")?;
-        let filename = filename.to_str().ok_or("filename is not valid UTF-8")?;
-        let filename = filename.to_string();
+        let filename = value
+            .filename
+            .and_then(|filename| filename.to_str().map(|s| s.to_string()));
 
-        let colno = value.colno.ok_or("colno is None")?;
-        let lineno = value.lineno.ok_or("lineno is None")?;
-        let fn_address = value.fn_address.ok_or("fn_address is None")?;
-        let fn_name = value.fn_name.ok_or("fn_name is None")?;
+        if let Some(filename) = filename {
+            let colno = value.colno.ok_or("colno is None")?;
+            let lineno = value.lineno.ok_or("lineno is None")?;
+            let fn_address = value.fn_address.ok_or("fn_address is None")?;
+            let fn_name = value.fn_name.ok_or("fn_name is None")?;
 
-        let fn_name = rustc_demangle::demangle(&fn_name).to_string();
+            let fn_name = rustc_demangle::demangle(&fn_name).to_string();
 
-        let delta = 5;
-        let range_min = if lineno > (delta + 1) {
-            lineno - delta - 1
-        } else {
-            0
-        };
-        let file_content = std::fs::File::open(&filename).ok().and_then(|file| {
-            let lines = std::io::BufReader::new(file).lines();
-            let mut lines: Vec<_> = lines
-                .enumerate()
-                .filter_map(|(i, line)| Some((i, line.ok()?)))
-                .skip_while(|(index, _)| *index < range_min as usize)
-                .take_while(|(index, _)| *index < lineno as usize + delta as usize)
-                .collect();
-
-            let highlighted_index = match lines.iter().position(|(i, _)| *i as u32 == lineno) {
-                Some(i) => i,
-                None => {
-                    println!("not found");
-                    return None;
-                }
+            let delta = 5;
+            let range_min = if lineno > (delta + 1) {
+                lineno - delta - 1
+            } else {
+                0
             };
+            let file_content = std::fs::File::open(&filename).ok().and_then(|file| {
+                let lines = std::io::BufReader::new(file).lines();
+                let mut lines: Vec<_> = lines
+                    .enumerate()
+                    .filter_map(|(i, line)| Some((i, line.ok()?)))
+                    .skip_while(|(index, _)| *index < range_min as usize)
+                    .take_while(|(index, _)| *index < lineno as usize + delta as usize)
+                    .collect();
 
-            let mut after = lines.split_off(highlighted_index - 1);
-            let highlighted = after.remove(0);
-            let before = lines;
+                let highlighted_index = match lines.iter().position(|(i, _)| *i as u32 == lineno) {
+                    Some(i) => i,
+                    None => {
+                        println!("not found");
+                        return None;
+                    }
+                };
 
-            Some(FileContent {
-                before: before.into_iter().map(|(_, line)| line).collect(),
-                highlighted: highlighted.1,
-                after: after.into_iter().map(|(_, line)| line).collect(),
+                let mut after = lines.split_off(highlighted_index - 1);
+                let highlighted = after.remove(0);
+                let before = lines;
+
+                Some(FileContent {
+                    before: before.into_iter().map(|(_, line)| line).collect(),
+                    highlighted: highlighted.1,
+                    after: after.into_iter().map(|(_, line)| line).collect(),
+                })
+            });
+
+            Ok(Key {
+                filename,
+                colno,
+                lineno,
+                fn_address,
+                fn_name,
+                file_content,
             })
-        });
-
-        Ok(Key {
-            filename,
-            colno,
-            lineno,
-            fn_address,
-            fn_name,
-            file_content,
-        })
+        } else {
+            Ok(Key {
+                filename: "<unknown>".to_string(),
+                colno: 0,
+                lineno: 0,
+                fn_address: std::ptr::null_mut(),
+                fn_name: "<unknown>".to_string(),
+                file_content: None,
+            })
+        }
     }
 }
 
@@ -386,11 +355,11 @@ mod test {
             tree,
             Tree {
                 key: Key {
-                    filename: "foo.rs".to_string(),
-                    colno: 1,
-                    lineno: 1,
+                    filename: "<root>".to_string(),
+                    colno: 0,
+                    lineno: 0,
                     fn_address: std::ptr::null_mut(),
-                    fn_name: "foo".to_string(),
+                    fn_name: "<root>".to_string(),
                     file_content: None,
                 },
                 allocation: 1024,
@@ -400,11 +369,11 @@ mod test {
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
-                        filename: "foo2.rs".to_string(),
+                        filename: "foo.rs".to_string(),
                         colno: 1,
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
-                        fn_name: "foo2".to_string(),
+                        fn_name: "foo".to_string(),
                         file_content: None,
                     },
                     allocation: 1024,
@@ -414,11 +383,11 @@ mod test {
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
-                            filename: "foo3.rs".to_string(),
+                            filename: "foo2.rs".to_string(),
                             colno: 1,
                             lineno: 1,
                             fn_address: std::ptr::null_mut(),
-                            fn_name: "foo3".to_string(),
+                            fn_name: "foo2".to_string(),
                             file_content: None,
                         },
                         allocation: 1024,
@@ -426,9 +395,24 @@ mod test {
                         deallocation: 0,
                         deallocation_count: 0,
                         category: Category::Unknown,
-                        children: vec![],
+                        children: vec![Tree {
+                            key: Key {
+                                filename: "foo3.rs".to_string(),
+                                colno: 1,
+                                lineno: 1,
+                                fn_address: std::ptr::null_mut(),
+                                fn_name: "foo3".to_string(),
+                                file_content: None,
+                            },
+                            allocation: 1024,
+                            allocation_count: 1,
+                            deallocation: 0,
+                            deallocation_count: 0,
+                            category: Category::Unknown,
+                            children: vec![],
+                        }],
                     }],
-                }],
+                }]
             }
         );
     }
@@ -502,11 +486,11 @@ mod test {
             tree,
             Tree {
                 key: Key {
-                    filename: "foo.rs".to_string(),
-                    colno: 1,
-                    lineno: 1,
+                    filename: "<root>".to_string(),
+                    colno: 0,
+                    lineno: 0,
                     fn_address: std::ptr::null_mut(),
-                    fn_name: "foo".to_string(),
+                    fn_name: "<root>".to_string(),
                     file_content: None,
                 },
                 allocation: 1024 * 2,
@@ -516,11 +500,11 @@ mod test {
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
-                        filename: "foo2.rs".to_string(),
+                        filename: "foo.rs".to_string(),
                         colno: 1,
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
-                        fn_name: "foo2".to_string(),
+                        fn_name: "foo".to_string(),
                         file_content: None,
                     },
                     allocation: 1024 * 2,
@@ -530,11 +514,11 @@ mod test {
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
-                            filename: "foo3.rs".to_string(),
+                            filename: "foo2.rs".to_string(),
                             colno: 1,
                             lineno: 1,
                             fn_address: std::ptr::null_mut(),
-                            fn_name: "foo3".to_string(),
+                            fn_name: "foo2".to_string(),
                             file_content: None,
                         },
                         allocation: 1024 * 2,
@@ -542,9 +526,24 @@ mod test {
                         deallocation: 0,
                         deallocation_count: 0,
                         category: Category::Unknown,
-                        children: vec![],
+                        children: vec![Tree {
+                            key: Key {
+                                filename: "foo3.rs".to_string(),
+                                colno: 1,
+                                lineno: 1,
+                                fn_address: std::ptr::null_mut(),
+                                fn_name: "foo3".to_string(),
+                                file_content: None,
+                            },
+                            allocation: 1024 * 2,
+                            allocation_count: 2,
+                            deallocation: 0,
+                            deallocation_count: 0,
+                            category: Category::Unknown,
+                            children: vec![],
+                        }],
                     }],
-                }],
+                }]
             }
         );
     }
@@ -625,11 +624,11 @@ mod test {
             tree,
             Tree {
                 key: Key {
-                    filename: "foo.rs".to_string(),
-                    colno: 1,
-                    lineno: 1,
+                    filename: "<root>".to_string(),
+                    colno: 0,
+                    lineno: 0,
                     fn_address: std::ptr::null_mut(),
-                    fn_name: "foo".to_string(),
+                    fn_name: "<root>".to_string(),
                     file_content: None,
                 },
                 allocation: 1024 * 2,
@@ -639,11 +638,11 @@ mod test {
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
-                        filename: "foo2.rs".to_string(),
+                        filename: "foo.rs".to_string(),
                         colno: 1,
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
-                        fn_name: "foo2".to_string(),
+                        fn_name: "foo".to_string(),
                         file_content: None,
                     },
                     allocation: 1024 * 2,
@@ -653,11 +652,11 @@ mod test {
                     category: Category::Unknown,
                     children: vec![Tree {
                         key: Key {
-                            filename: "foo3.rs".to_string(),
+                            filename: "foo2.rs".to_string(),
                             colno: 1,
                             lineno: 1,
                             fn_address: std::ptr::null_mut(),
-                            fn_name: "foo3".to_string(),
+                            fn_name: "foo2".to_string(),
                             file_content: None,
                         },
                         allocation: 1024 * 2,
@@ -667,22 +666,37 @@ mod test {
                         category: Category::Unknown,
                         children: vec![Tree {
                             key: Key {
-                                filename: "foo4.rs".to_string(),
+                                filename: "foo3.rs".to_string(),
                                 colno: 1,
                                 lineno: 1,
                                 fn_address: std::ptr::null_mut(),
-                                fn_name: "foo4".to_string(),
+                                fn_name: "foo3".to_string(),
                                 file_content: None,
                             },
-                            allocation: 1024,
-                            allocation_count: 1,
+                            allocation: 1024 * 2,
+                            allocation_count: 2,
                             deallocation: 0,
                             deallocation_count: 0,
                             category: Category::Unknown,
-                            children: vec![],
+                            children: vec![Tree {
+                                key: Key {
+                                    filename: "foo4.rs".to_string(),
+                                    colno: 1,
+                                    lineno: 1,
+                                    fn_address: std::ptr::null_mut(),
+                                    fn_name: "foo4".to_string(),
+                                    file_content: None,
+                                },
+                                allocation: 1024,
+                                allocation_count: 1,
+                                deallocation: 0,
+                                deallocation_count: 0,
+                                category: Category::Unknown,
+                                children: vec![],
+                            }],
                         }],
                     }],
-                }],
+                }]
             }
         );
     }
@@ -756,11 +770,11 @@ mod test {
             tree,
             Tree {
                 key: Key {
-                    filename: "foo.rs".to_string(),
-                    colno: 1,
-                    lineno: 1,
+                    filename: "<root>".to_string(),
+                    colno: 0,
+                    lineno: 0,
                     fn_address: std::ptr::null_mut(),
-                    fn_name: "foo".to_string(),
+                    fn_name: "<root>".to_string(),
                     file_content: None,
                 },
                 allocation: 1024 * 2,
@@ -770,11 +784,11 @@ mod test {
                 category: Category::Unknown,
                 children: vec![Tree {
                     key: Key {
-                        filename: "foo2.rs".to_string(),
+                        filename: "foo.rs".to_string(),
                         colno: 1,
                         lineno: 1,
                         fn_address: std::ptr::null_mut(),
-                        fn_name: "foo2".to_string(),
+                        fn_name: "foo".to_string(),
                         file_content: None,
                     },
                     allocation: 1024 * 2,
@@ -782,41 +796,56 @@ mod test {
                     deallocation: 0,
                     deallocation_count: 0,
                     category: Category::Unknown,
-                    children: vec![
-                        Tree {
-                            key: Key {
-                                filename: "foo4.rs".to_string(),
-                                colno: 1,
-                                lineno: 1,
-                                fn_address: std::ptr::null_mut(),
-                                fn_name: "foo4".to_string(),
-                                file_content: None,
-                            },
-                            allocation: 1024,
-                            allocation_count: 1,
-                            deallocation: 0,
-                            deallocation_count: 0,
-                            category: Category::Unknown,
-                            children: vec![],
+                    children: vec![Tree {
+                        key: Key {
+                            filename: "foo2.rs".to_string(),
+                            colno: 1,
+                            lineno: 1,
+                            fn_address: std::ptr::null_mut(),
+                            fn_name: "foo2".to_string(),
+                            file_content: None,
                         },
-                        Tree {
-                            key: Key {
-                                filename: "foo3.rs".to_string(),
-                                colno: 1,
-                                lineno: 1,
-                                fn_address: std::ptr::null_mut(),
-                                fn_name: "foo3".to_string(),
-                                file_content: None,
+                        allocation: 1024 * 2,
+                        allocation_count: 2,
+                        deallocation: 0,
+                        deallocation_count: 0,
+                        category: Category::Unknown,
+                        children: vec![
+                            Tree {
+                                key: Key {
+                                    filename: "foo3.rs".to_string(),
+                                    colno: 1,
+                                    lineno: 1,
+                                    fn_address: std::ptr::null_mut(),
+                                    fn_name: "foo3".to_string(),
+                                    file_content: None,
+                                },
+                                allocation: 1024,
+                                allocation_count: 1,
+                                deallocation: 0,
+                                deallocation_count: 0,
+                                category: Category::Unknown,
+                                children: vec![],
                             },
-                            allocation: 1024,
-                            allocation_count: 1,
-                            deallocation: 0,
-                            deallocation_count: 0,
-                            category: Category::Unknown,
-                            children: vec![],
-                        }
-                    ],
-                }],
+                            Tree {
+                                key: Key {
+                                    filename: "foo4.rs".to_string(),
+                                    colno: 1,
+                                    lineno: 1,
+                                    fn_address: std::ptr::null_mut(),
+                                    fn_name: "foo4".to_string(),
+                                    file_content: None,
+                                },
+                                allocation: 1024,
+                                allocation_count: 1,
+                                deallocation: 0,
+                                deallocation_count: 0,
+                                category: Category::Unknown,
+                                children: vec![],
+                            },
+                        ],
+                    }],
+                }]
             }
         );
     }
