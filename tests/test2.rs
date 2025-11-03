@@ -56,14 +56,18 @@ fn test2() {
 
     let tree = stats.into_tree().unwrap();
 
+    // This is the total allocation/deallocation size/count
+    assert_eq!(tree.allocation, 1024 + 512);
+    assert_eq!(tree.allocation_count, 2);
+    assert_eq!(tree.deallocation, 1024 + 512);
+    assert_eq!(tree.deallocation_count, 2);
+
     let current_file = current_file.to_str().unwrap().to_string();
     let flatten = flat_tree(&tree);
     let nodes: Vec<_> = flatten
         .into_iter()
         .filter(|n| &n.key.filename == &current_file && n.key.fn_name.contains("::run_"))
         .collect();
-
-    let k: Vec<_> = nodes.iter().map(|n| &n.key).collect();
 
     // 2 allocations + 2 deallocations + run_child call inside run_parent
     assert_eq!(nodes.len(), 5);

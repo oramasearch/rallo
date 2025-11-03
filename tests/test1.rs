@@ -38,6 +38,12 @@ fn test1() {
 
     let tree = stats.into_tree().unwrap();
 
+    // This is the total allocation/deallocation size/count
+    assert_eq!(tree.allocation, 1024);
+    assert_eq!(tree.allocation_count, 1);
+    assert_eq!(tree.deallocation, 1024);
+    assert_eq!(tree.deallocation_count, 1);
+
     let current_file = current_file.to_str().unwrap().to_string();
     let flatten = flat_tree(&tree);
     let nodes: Vec<_> = flatten
