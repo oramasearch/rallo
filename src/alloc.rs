@@ -2,7 +2,6 @@ use std::{
     alloc::{GlobalAlloc, Layout},
     collections::VecDeque,
     ffi::c_void,
-    mem::MaybeUninit,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -21,8 +20,10 @@ impl FrameWrapper {
     }
 }
 
-type LogType = (usize, usize, usize, &'static mut [FrameWrapper]);
-type LogsType = &'static [RalloUnsafeCell<LogType>];
+type LogType<const MAX_FRAME_LENGTH: usize> =
+    (usize, usize, usize, [FrameWrapper; MAX_FRAME_LENGTH]);
+type LogsType<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> =
+    [RalloUnsafeCell<LogType<MAX_FRAME_LENGTH>>; MAX_LOG_COUNT];
 
 /// A custom allocator that tracks memory allocations and deallocations.
 /// ```rust
@@ -51,11 +52,12 @@ type LogsType = &'static [RalloUnsafeCell<LogType>];
 pub struct RalloAllocator<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> {
     is_tracking: AtomicBool,
     alloc: std::alloc::System,
-    allocation_logs: MaybeUninit<LogsType>,
+    allocation_logs: LogsType<MAX_FRAME_LENGTH, MAX_LOG_COUNT>,
     allocation_logs_pointer: AtomicUsize,
-    deallocation_logs: MaybeUninit<LogsType>,
+    deallocation_logs: LogsType<MAX_FRAME_LENGTH, MAX_LOG_COUNT>,
     deallocation_logs_pointer: AtomicUsize,
 }
+
 impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize> Default
     for RalloAllocator<MAX_FRAME_LENGTH, MAX_LOG_COUNT>
 {
@@ -68,12 +70,30 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
     RalloAllocator<MAX_FRAME_LENGTH, MAX_LOG_COUNT>
 {
     pub const fn new() -> Self {
+        let allocation_logs = [const {
+            RalloUnsafeCell::new((
+                0,                                       // size
+                0,                                       // `backtrace` len (stack depth)
+                0,                                       // ptr address
+                [FrameWrapper::new(); MAX_FRAME_LENGTH], // frames
+            ))
+        }; MAX_LOG_COUNT];
+
+        let deallocation_logs = [const {
+            RalloUnsafeCell::new((
+                0,                                       // size
+                0,                                       // `backtrace` len (stack depth)
+                0,                                       // ptr address
+                [FrameWrapper::new(); MAX_FRAME_LENGTH], // frames
+            ))
+        }; MAX_LOG_COUNT];
+
         RalloAllocator {
             is_tracking: AtomicBool::new(false),
             alloc: std::alloc::System,
-            allocation_logs: MaybeUninit::uninit(),
+            allocation_logs,
             allocation_logs_pointer: AtomicUsize::new(0),
-            deallocation_logs: MaybeUninit::uninit(),
+            deallocation_logs,
             deallocation_logs_pointer: AtomicUsize::new(0),
         }
     }
@@ -89,47 +109,6 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
         // without tracking it.
         backtrace::trace(|_| true);
 
-        let mut v = Vec::with_capacity(MAX_LOG_COUNT);
-        for _ in 0..MAX_LOG_COUNT {
-            let mut a = Vec::with_capacity(MAX_FRAME_LENGTH);
-            for _ in 0..MAX_FRAME_LENGTH {
-                a.push(FrameWrapper::new());
-            }
-
-            v.push(RalloUnsafeCell::new((
-                0,                               // size
-                0,                               // `backtrace` len (stack depth)
-                0,                               // ptr address
-                Box::leak(a.into_boxed_slice()), // frames
-            )));
-        }
-        let alloc: LogsType = Box::leak(v.into_boxed_slice());
-
-        let mut v = Vec::with_capacity(MAX_LOG_COUNT);
-        for _ in 0..MAX_LOG_COUNT {
-            let mut a = Vec::with_capacity(MAX_FRAME_LENGTH);
-            for _ in 0..MAX_FRAME_LENGTH {
-                a.push(FrameWrapper::new());
-            }
-            v.push(RalloUnsafeCell::new((
-                0,                               // size
-                0,                               // `backtrace` len (stack depth)
-                0,                               // ptr address
-                Box::leak(a.into_boxed_slice()), // frames
-            )));
-        }
-        let dealloc: LogsType = Box::leak(v.into_boxed_slice());
-
-        // Safety: `start_track` and is not called concurrently
-        {
-            let a = self as *const Self;
-            let b = a as *mut Self;
-            let ff = unsafe { b.as_mut().unwrap() };
-
-            ff.allocation_logs = MaybeUninit::new(alloc);
-            ff.deallocation_logs = MaybeUninit::new(dealloc);
-        }
-
         self.is_tracking.store(true, Ordering::SeqCst);
     }
 
@@ -139,29 +118,25 @@ impl<const MAX_FRAME_LENGTH: usize, const MAX_LOG_COUNT: usize>
     }
 
     #[allow(clippy::mut_from_ref)]
-    unsafe fn get_allocation_item_mut(&self, index: usize) -> &mut LogType {
-        let allocatio_logs = unsafe { self.allocation_logs.assume_init_ref() };
-        let element = &allocatio_logs[index];
-        unsafe { (&mut *element.get() as &mut LogType) as _ }
+    unsafe fn get_allocation_item_mut(&self, index: usize) -> &mut LogType<MAX_FRAME_LENGTH> {
+        let element = &self.allocation_logs[index];
+        unsafe { (&mut *element.get() as &mut LogType<MAX_FRAME_LENGTH>) as _ }
     }
 
     #[allow(clippy::mut_from_ref)]
-    unsafe fn get_deallocation_item_mut(&self, index: usize) -> &mut LogType {
-        let deallocation_logs = unsafe { self.deallocation_logs.assume_init_ref() };
-        let element = &deallocation_logs[index];
-        unsafe { (&mut *element.get() as &mut LogType) as _ }
+    unsafe fn get_deallocation_item_mut(&self, index: usize) -> &mut LogType<MAX_FRAME_LENGTH> {
+        let element = &self.deallocation_logs[index];
+        unsafe { (&mut *element.get() as &mut LogType<MAX_FRAME_LENGTH>) as _ }
     }
 
-    unsafe fn get_allocation_item(&self, index: usize) -> &LogType {
-        let allocatio_logs = unsafe { self.allocation_logs.assume_init_ref() };
-        let element = &allocatio_logs[index];
-        unsafe { (&*element.get() as &LogType) as _ }
+    unsafe fn get_allocation_item(&self, index: usize) -> &LogType<MAX_FRAME_LENGTH> {
+        let element = &self.allocation_logs[index];
+        unsafe { (&*element.get() as &LogType<MAX_FRAME_LENGTH>) as _ }
     }
 
-    unsafe fn get_deallocation_item(&self, index: usize) -> &LogType {
-        let deallocation_logs = unsafe { self.deallocation_logs.assume_init_ref() };
-        let element = &deallocation_logs[index];
-        unsafe { (&*element.get() as &LogType) as _ }
+    unsafe fn get_deallocation_item(&self, index: usize) -> &LogType<MAX_FRAME_LENGTH> {
+        let element = &self.deallocation_logs[index];
+        unsafe { (&*element.get() as &LogType<MAX_FRAME_LENGTH>) as _ }
     }
 
     unsafe fn log_alloc(&self, layout: &Layout, address: usize) {
