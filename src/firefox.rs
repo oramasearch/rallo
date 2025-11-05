@@ -38,8 +38,7 @@ impl FirefoxProfile {
     /// Serialize the Firefox profile to the given JSON file path.
     pub fn write_json<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         let writer = std::io::BufWriter::new(std::fs::File::create(path)?);
-        serde_json::to_writer(writer, &self.inner)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+        serde_json::to_writer(writer, &self.inner).map_err(std::io::Error::other)
     }
 
     /// Serialize the profile into a JSON string.
@@ -224,10 +223,10 @@ impl SymbolRegistry {
         lineno: Option<u32>,
         colno: Option<u32>,
     ) -> FxFrame {
-        if let Some(path) = filename {
-            if let Some(frame) = self.resolve_with_library(profile, path, function, lineno, colno) {
-                return frame;
-            }
+        if let Some(path) = filename
+            && let Some(frame) = self.resolve_with_library(profile, path, function, lineno, colno)
+        {
+            return frame;
         }
 
         let interned = profile.intern_string(function);
@@ -267,9 +266,7 @@ impl SymbolRegistry {
     }
 
     fn ensure_library(&mut self, profile: &mut Profile, path: &Path) -> &mut LibraryEntry {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let display_path = canonical.to_string_lossy().to_string();
         self.libraries.entry(canonical.clone()).or_insert_with(|| {
             let info = LibraryInfo {

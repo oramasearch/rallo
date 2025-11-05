@@ -66,7 +66,7 @@ fn test2() {
     let flatten = flat_tree(&tree);
     let nodes: Vec<_> = flatten
         .into_iter()
-        .filter(|n| &n.key.filename == &current_file && n.key.fn_name.contains("::run_"))
+        .filter(|n| n.key.filename == current_file && n.key.fn_name.contains("::run_"))
         .collect();
 
     // 2 allocations + 2 deallocations + run_child call inside run_parent
@@ -119,7 +119,7 @@ fn extrapolate_frame<'f>(
     frames.iter().find(|f| {
         if let Some(fn_name) = &f.fn_name {
             let fn_name = rustc_demangle::demangle(fn_name).to_string();
-            f.filename.as_ref() == Some(filename) && fn_name.contains(&wanted_fn_name)
+            f.filename.as_ref() == Some(filename) && fn_name.contains(wanted_fn_name)
         } else {
             false
         }
